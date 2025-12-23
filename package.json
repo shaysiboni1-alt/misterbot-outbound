@@ -1,10 +1,13 @@
 {
   "name": "misterbot-outbound",
   "version": "1.0.0",
-  "description": "MisterBot Outbound Realtime Voice Bot – Twilio Media Streams <-> OpenAI Realtime",
+  "description": "MisterBot Outbound Realtime Voice Server (Twilio <-> OpenAI)",
   "main": "outbound_server.js",
   "scripts": {
     "start": "node outbound_server.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "express": "^4.19.0",
