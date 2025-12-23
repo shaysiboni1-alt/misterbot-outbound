@@ -1,13 +1,15 @@
 # render-outbound.yaml
-# MisterBot OUTBOUND service (separate from inbound)
+# MisterBot OUTBOUND – Render Blueprint
+
 version: "1"
 services:
   - type: web
     name: misterbot-outbound
     runtime: node
-    repo: https://github.com/shaysiboni1-alt/misterbot-realtime
     plan: starter
     region: frankfurt
+    repo: https://github.com/shaysiboni1-alt/misterbot-outbound
+    branch: main
     buildCommand: npm install
     startCommand: node outbound_server.js
     envVars:
