@@ -1,23 +1,13 @@
 // outbound_server.js
 //
 // MisterBot Realtime OUTBOUND Voice Bot – "נטע" (שיחות יוצאות)
-// Twilio Calls API -> TwiML -> Media Streams <-> OpenAI Realtime
+// Twilio -> Media Streams <-> OpenAI Realtime
 //
-// ❗ מופרד לחלוטין מה-INBOUND (ריפו ושירות נפרדים)
+// ❗ מופרד לחלוטין מה-INBOUND
+// ❗ לא משתמש ב-dotenv בכלל (כדי שלא ייפול על Render)
 //
 // Start: node outbound_server.js
 //
-
-/**
- * dotenv: ברנדר זה לא חובה, אבל אם מריצים לוקאלית זה נוח.
- * אם dotenv לא מותקן/לא קיים — לא נופלים.
- */
-try {
-  // eslint-disable-next-line global-require
-  require('dotenv').config();
-} catch (e) {
-  // ignore
-}
 
 const express = require('express');
 const http = require('http');
@@ -39,6 +29,14 @@ function envBool(name, def = false) {
   return ['1', 'true', 'yes', 'on'].includes(raw);
 }
 
+function safeJsonParse(s) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
 // -----------------------------
 // Core ENV
 // -----------------------------
@@ -47,7 +45,7 @@ const PORT = envNumber('PORT', 3001);
 /**
  * OUTBOUND_DOMAIN:
  * לשים רק דומיין בלי https://
- * לדוגמה: misterbot-outbound.onrender.com
+ * דוגמה: misterbot-outbound.onrender.com
  */
 const DOMAIN = (process.env.OUTBOUND_DOMAIN || '').trim();
 
@@ -57,54 +55,40 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-// Scripts / prompts (יוצא)
+// Prompts / scripts
 const OUTBOUND_OPENING_SCRIPT = (process.env.OUTBOUND_OPENING_SCRIPT || '').trim();
 const OUTBOUND_CLOSING_SCRIPT = (process.env.OUTBOUND_CLOSING_SCRIPT || 'תּוֹדָה רַבָּה, יוֹם נָעִים וּלְהִתְרָאוֹת.').trim();
 
 const OUTBOUND_GENERAL_PROMPT = (process.env.OUTBOUND_GENERAL_PROMPT || '').trim();
 const OUTBOUND_BUSINESS_PROMPT = (process.env.OUTBOUND_BUSINESS_PROMPT || '').trim();
 
-// Languages (משתמשים במה שכבר יש לכם)
+// Languages
 const MB_LANGUAGES = (process.env.MB_LANGUAGES || 'he').trim();
 
 // Behavior / timing
 const OUTBOUND_HANGUP_GRACE_MS = envNumber('OUTBOUND_HANGUP_GRACE_MS', 4000);
 const OUTBOUND_MAX_CALL_MS = envNumber('OUTBOUND_MAX_CALL_MS', 5 * 60 * 1000);
-const OUTBOUND_ENABLE_STATUS_WEBHOOK = envBool('OUTBOUND_ENABLE_STATUS_WEBHOOK', true);
-const OUTBOUND_STATUS_WEBHOOK_URL = (process.env.OUTBOUND_STATUS_WEBHOOK_URL || '').trim();
 
-// OpenAI Realtime config
+const OUTBOUND_STATUS_WEBHOOK_URL = (process.env.OUTBOUND_STATUS_WEBHOOK_URL || '').trim();
+const OUTBOUND_ENABLE_STATUS_WEBHOOK = envBool('OUTBOUND_ENABLE_STATUS_WEBHOOK', true);
+
+// OpenAI Realtime
 const OPENAI_REALTIME_MODEL = (process.env.OUTBOUND_REALTIME_MODEL || 'gpt-4o-realtime-preview-2024-12-17').trim();
 const OPENAI_VOICE = (process.env.OPENAI_VOICE || 'alloy').trim();
 
+// VAD (משתמשים במה שכבר יש לכם בקבוצה)
 const MB_VAD_THRESHOLD = envNumber('MB_VAD_THRESHOLD', 0.75);
 const MB_VAD_SILENCE_MS = envNumber('MB_VAD_SILENCE_MS', 900);
 const MB_VAD_PREFIX_MS = envNumber('MB_VAD_PREFIX_MS', 200);
 const MB_VAD_SUFFIX_MS = envNumber('MB_VAD_SUFFIX_MS', 150);
-
 const MB_ALLOW_BARGE_IN = envBool('MB_ALLOW_BARGE_IN', true);
 
 // -----------------------------
-// Helpers
+// Webhook helper (אם תרצה סטטוסים)
 // -----------------------------
-function safeJsonParse(s) {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
-}
-
-function buildHost(req) {
-  // אם שמתם OUTBOUND_DOMAIN – נשתמש בו תמיד (מומלץ).
-  // אחרת נשתמש ב-host של הבקשה (עובד לרוב).
-  return DOMAIN || req.headers.host;
-}
-
 async function postJson(url, payload) {
   if (!url) return;
-  // node-fetch v2
-  const fetch = require('node-fetch'); // eslint-disable-line global-require
+  const fetch = require('node-fetch'); // dependency exists אצלכם
   try {
     await fetch(url, {
       method: 'POST',
@@ -114,6 +98,19 @@ async function postJson(url, payload) {
   } catch (e) {
     console.warn('⚠️ webhook post failed:', e?.message || e);
   }
+}
+
+function buildHost(req) {
+  return DOMAIN || req.headers.host;
+}
+
+function escapeXml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 // -----------------------------
@@ -126,27 +123,24 @@ app.use(express.json());
 app.get('/health', (_, res) => res.json({ ok: true }));
 
 /**
- * TwiML endpoint לשיחות יוצאות (משמש את Twilio Voice Function /voice_misterbot_outbound אם תרצו,
- * או ישירות Calls API).
- *
- * הקישור צריך להיות:
- *   https://misterbot-outbound.onrender.com/outbound/twilio-voice
+ * אם אי פעם תרצה TwiML מ-Render (לא חובה כי אתם משתמשים ב-Twilio Function),
+ * זה endpoint מוכן:
+ * POST https://<OUTBOUND_DOMAIN>/outbound/twilio-voice
  */
 app.post('/outbound/twilio-voice', (req, res) => {
   const host = buildHost(req);
   const wsUrl = `wss://${host}/outbound-media-stream`;
 
-  // אפשר להעביר פרמטרים דרך querystring או Twilio <Parameter>:
-  const leadName = (req.query.full_name || req.query.leadName || '').toString();
-  const recordId = (req.query.recordId || req.query.outbound_id || '').toString();
+  const fullName = (req.query.full_name || req.query.fullName || req.query.leadName || '').toString();
+  const outboundId = (req.query.outbound_id || req.query.outboundId || req.query.recordId || '').toString();
 
   const twiml = `
 <Response>
   <Connect>
     <Stream url="${wsUrl}">
       <Parameter name="direction" value="outbound" />
-      <Parameter name="full_name" value="${escapeXml(leadName)}" />
-      <Parameter name="outbound_id" value="${escapeXml(recordId)}" />
+      <Parameter name="full_name" value="${escapeXml(fullName)}" />
+      <Parameter name="outbound_id" value="${escapeXml(outboundId)}" />
     </Stream>
   </Connect>
 </Response>
@@ -155,22 +149,13 @@ app.post('/outbound/twilio-voice', (req, res) => {
   res.type('text/xml').send(twiml);
 });
 
-function escapeXml(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
 // -----------------------------
-// Server + WebSocket (Twilio Media Streams)
+// HTTP server + WS
 // -----------------------------
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: '/outbound-media-stream' });
 
-wss.on('connection', (twilioWs, req) => {
+wss.on('connection', (twilioWs) => {
   const startedAt = Date.now();
   let callSid = '';
   let streamSid = '';
@@ -193,7 +178,7 @@ wss.on('connection', (twilioWs, req) => {
 
     if (OUTBOUND_ENABLE_STATUS_WEBHOOK && OUTBOUND_STATUS_WEBHOOK_URL) {
       postJson(OUTBOUND_STATUS_WEBHOOK_URL, {
-        event: 'outbound_stream_closed',
+        event: 'outbound_closed',
         reason: reason || 'closed',
         callSid,
         streamSid,
@@ -204,25 +189,53 @@ wss.on('connection', (twilioWs, req) => {
     }
   }
 
-  // Hard safety max call time
-  const maxTimer = setTimeout(() => {
-    closeAll('max_call_time');
-  }, OUTBOUND_MAX_CALL_MS);
+  const maxTimer = setTimeout(() => closeAll('max_call_time'), OUTBOUND_MAX_CALL_MS);
 
-  twilioWs.on('message', (msg) => {
-    const data = safeJsonParse(msg);
-    if (!data || !data.event) return;
+  function buildOpening(name) {
+    const tpl =
+      OUTBOUND_OPENING_SCRIPT ||
+      'הַי… (הַפְסָקָה שֶׁל שְׁנִיָּה) הַאִם אֲנִי מְדַבֶּרֶת עִם ${FULL_NAME}?';
+    const safeName = (name || '').trim();
+    return tpl.replace(/\$\{FULL_NAME\}/g, safeName || '...');
+  }
 
-    if (data.event === 'start') {
-      callSid = data.start?.callSid || '';
-      streamSid = data.start?.streamSid || '';
+  function buildInstructions(openingText) {
+    return `
+אַתֶּם "נֶטָּע" — בּוֹט קוֹלִי שָׂמֵחַ, אֲמִתִּי וּמְכִירָתִי, בְּלָשׁוֹן רַבִּים.
+זוֹ שִׂיחָה יוֹזֶמֶת (שִׂיחָה יוֹצֵאת).
 
-      // Twilio <Parameter> מגיע בתוך start.customParameters
-      const cp = data.start?.customParameters || {};
+שָׂפוֹת מוּתָּרוֹת: ${MB_LANGUAGES}.
+בְּרִירַת מֶחְדָּל: עִבְרִית. אִם הָאָדָם עוֹנֶה בְּאַנְגְּלִית/רוּסִית/עֲרָבִית — תַּעַבְרוּ בִּטְבִיעוּת לְאוֹתָהּ שָׂפָה.
+
+פְּתִיחַ (נאמר): "${openingText}"
+
+כללים קריטיים:
+- אם לא מעוניינים: לכבד ולסיים.
+- לא לדבר על מחירים, רק להסביר מודל (דקות/חבילות) ולהעביר לנציג.
+- בסיום: לומר רק את הסגיר ואז לסיים. הסגיר:
+"${OUTBOUND_CLOSING_SCRIPT}"
+
+הפרומפט הכללי:
+${OUTBOUND_GENERAL_PROMPT}
+
+הפרומפט העסקי:
+${OUTBOUND_BUSINESS_PROMPT}
+`.trim();
+  }
+
+  twilioWs.on('message', (raw) => {
+    const msg = safeJsonParse(raw);
+    if (!msg || !msg.event) return;
+
+    if (msg.event === 'start') {
+      callSid = msg.start?.callSid || '';
+      streamSid = msg.start?.streamSid || '';
+      const cp = msg.start?.customParameters || {};
+
       fullName = (cp.full_name || cp.fullName || '').toString();
       outboundId = (cp.outbound_id || cp.outboundId || '').toString();
 
-      // פותחים OpenAI Realtime אחרי start כדי שנדע פרטים
+      // OpenAI WS
       openAiWs = new WebSocket(
         `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`,
         {
@@ -234,15 +247,9 @@ wss.on('connection', (twilioWs, req) => {
       );
 
       openAiWs.on('open', () => {
-        const opening = renderOpening(fullName);
+        const openingText = buildOpening(fullName);
+        const instructions = buildInstructions(openingText);
 
-        const instructions = buildInstructions({
-          languages: MB_LANGUAGES,
-          opening,
-          closing: OUTBOUND_CLOSING_SCRIPT
-        });
-
-        // Session update
         openAiWs.send(
           JSON.stringify({
             type: 'session.update',
@@ -262,14 +269,13 @@ wss.on('connection', (twilioWs, req) => {
           })
         );
 
-        // Push opening as user message -> force assistant speak it
         openAiWs.send(
           JSON.stringify({
             type: 'conversation.item.create',
             item: {
               type: 'message',
               role: 'user',
-              content: [{ type: 'input_text', text: opening }]
+              content: [{ type: 'input_text', text: openingText }]
             }
           })
         );
@@ -277,7 +283,7 @@ wss.on('connection', (twilioWs, req) => {
 
         if (OUTBOUND_ENABLE_STATUS_WEBHOOK && OUTBOUND_STATUS_WEBHOOK_URL) {
           postJson(OUTBOUND_STATUS_WEBHOOK_URL, {
-            event: 'outbound_call_started',
+            event: 'outbound_started',
             callSid,
             streamSid,
             outboundId,
@@ -286,11 +292,10 @@ wss.on('connection', (twilioWs, req) => {
         }
       });
 
-      openAiWs.on('message', (raw) => {
-        const evt = safeJsonParse(raw);
+      openAiWs.on('message', (evtRaw) => {
+        const evt = safeJsonParse(evtRaw);
         if (!evt) return;
 
-        // audio delta -> send to Twilio
         if (evt.type === 'response.audio.delta' && evt.delta) {
           twilioWs.send(
             JSON.stringify({
@@ -302,20 +307,14 @@ wss.on('connection', (twilioWs, req) => {
           return;
         }
 
-        // אם רוצים barge-in: כשמשתמש מדבר (input_audio_buffer.speech_started) לעצור דיבור של הבוט
         if (MB_ALLOW_BARGE_IN && evt.type === 'input_audio_buffer.speech_started') {
           try {
             openAiWs.send(JSON.stringify({ type: 'response.cancel' }));
           } catch {}
-          return;
         }
-
-        // אם ה-AI סיים תגובה והוציא "closing" לפי הפרומפט, לא מנתקים פה בכוח;
-        // Twilio יישאר מחובר, אז אנחנו נסגור אחרי grace כשTwilio יסגור/או לפי max.
       });
 
       openAiWs.on('close', () => {
-        // לא סוגרים את Twilio מיד; נותנים grace קצר
         setTimeout(() => closeAll('openai_closed'), OUTBOUND_HANGUP_GRACE_MS);
       });
 
@@ -327,77 +326,22 @@ wss.on('connection', (twilioWs, req) => {
       return;
     }
 
-    if (data.event === 'media') {
-      // Forward caller audio to OpenAI
-      const payload = data.media?.payload;
+    if (msg.event === 'media') {
+      const payload = msg.media?.payload;
       if (!payload) return;
       if (!openAiWs || openAiWs.readyState !== WebSocket.OPEN) return;
-
       openAiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: payload }));
       return;
     }
 
-    if (data.event === 'stop') {
-      // Twilio ended
+    if (msg.event === 'stop') {
       closeAll('twilio_stop');
-      return;
     }
   });
 
   twilioWs.on('close', () => closeAll('twilio_closed'));
   twilioWs.on('error', () => closeAll('twilio_error'));
 
-  function renderOpening(name) {
-    const template = OUTBOUND_OPENING_SCRIPT || 'הַי… (הַפְסָקָה שֶׁל שְׁנִיָּה) הַאִם אֲנִי מְדַבֶּרֶת עִם ${FULL_NAME}?';
-    const safeName = (name || '').trim();
-    return template.replace(/\$\{FULL_NAME\}/g, safeName || '...');
-  }
-
-  function buildInstructions({ languages, opening, closing }) {
-    // כאן אנחנו “מזריקים” את כל הפרומפטים שלך + חוק הסגירה והניתוק אחרי grace
-    return `
-אַתֶּם "נֶטָּע" — בּוֹט קוֹלִי שָׂמֵחַ, אֲמִתִּי וּמְכִירָתִי, בְּלָשׁוֹן רַבִּים.
-זוֹ שִׂיחָה יוֹזֶמֶת (שִׂיחָה יוֹצֵאת).
-
-שָׂפוֹת מוּתָּרוֹת: ${languages}.
-בְּרִירַת מֶחְדָּל: עִבְרִית. אִם הָאָדָם עוֹנֶה בְּאַנְגְּלִית/רוּסִית/עֲרָבִית — תַּעַבְרוּ בִּטְבִיעוּת לְאוֹתָהּ שָׂפָה.
-
-פְּתִיחַ הַשִּׂיחָה (כְּבָר נֶאֱמַר עַל־יָדֵיכֶם): 
-"${opening}"
-
-חוק זיהוי:
-- אִם הָאָדָם אוֹמֵר "כֵּן" / "מְדַבֵּר" — ממשיכים.
-- אִם "לֹא" / "טָעוּת" — מִתְנַצְּלִים קָצָר, שׁוֹאֲלִים אִם יֵשׁ לָנוּ לְמִי לְפְנוֹת, וּמְסַיְּמִים מִיָּד בְּנִימוּס.
-- אִם לֹא בָּרוּר — שְׁאֵלַת הֶבְהֵר קְצָרָה אַחַת.
-
-מַה לְהַצִּיג כְּשֶׁהוּא הַנָּכוֹן:
-- "קוֹרְאִים לִי נֶטָּע, אֲנִי הַבּוֹט הַקּוֹלִי שֶׁל חֶבְרַת מִיסְטֶר בּוֹט, אָנוּ מַצִּיעִים פִּתְרוֹנוֹת מַעֲנֶה טֶלֶפוֹנִי לַעֲסָקִים בְּאֶמְצָעוּת בּוֹט כָּמוֹנִי."
-- שְׁאֵלַת עִנְיָן: "הַאִם אֶפְשָׁר לְעַנְיֵן אֶתְכֶם בְּכָךְ לָעֵסֶק שֶׁלָּכֶם?"
-
-מַטָּרָה:
-- אִם יֵשׁ עִנְיָן: בִּירוּר צֹרֶךְ רִאשׁוֹנִי (סוּג עֵסֶק, נְפָח שִׂיחוֹת, כְּאֵבִים בְּמַעֲנֶה טֶלֶפוֹנִי, שֵׁרוּת/מִכִּירוֹת/תִּיאוּם תּוֹרִים/תִּזְכּוֹרוֹת/מוֹקֵד טֶכְנִי).
-- לֹא מְדַבְּרִים עַל מְחִירִים — רַק מַסְבִּירִים מוֹדֶל תִּמְחוּר (דַּקּוֹת/שִׁימוּשׁ/חֲבִילָה) וְשֶׁנְּצִיג מְכִירוֹת חוֹזֵר עִם הַצָּעָה מְסֻדֶּרֶת.
-- הִתְנַגְּדוּיוֹת: לְקַבֵּל בְּהֲבָנָה, לְתַת מִשְׁפָּט–שְׁנַיִם מַרְגִּיעִים וּמְדוּיָּקִים, וְלַחֲזוֹר לְשֵׁאֲלָה קְטַנָּה לְהַמְשָׁךְ. אִם לֹא רוֹצִים — לְכַבֵּד וּלְסַיֵּם.
-
-מֵידָע עָלֵינוּ (אִם שׁוֹאֲלִים):
-- כְּ־4 שָׁנִים בַּתְּחוּם, כּ־10 עוֹבְדִים.
-- פּוֹעֲלִים עִם מִגְוָן עֲסָקִים וְאַרְגּוֹנִים בְּיִשְׂרָאֵל (לֹא מְצַיְּנִים שֵׁמוֹת).
-- מְמוּקָּמִים בְּתֵל־אָבִיב, אֵזוֹר רָמַת הַחַיָּל.
-
-הַפְּרוֹמְפְּט הַכְּלָלִי:
-${OUTBOUND_GENERAL_PROMPT}
-
-הַפְּרוֹמְפְּט הָעִסְקִי:
-${OUTBOUND_BUSINESS_PROMPT}
-
-סִגּוּר:
-- כְּשֶׁמַּגִּיעִים לְסִיּוּם, אוֹמְרִים רַק אֶת מִשְׁפַּט הַסִּגּוּר הַמֻּגְדָּר (לְלֹא שְׁאֵלוֹת בַּסּוֹף):
-"${closing}"
-- אַחֲרֵי שֶׁאָמַרְתֶּם אֶת הַסִּגּוּר — מְסַיְּמִים.
-`.trim();
-  }
-
-  // cleanup
   twilioWs.on('close', () => clearTimeout(maxTimer));
   twilioWs.on('error', () => clearTimeout(maxTimer));
 });
