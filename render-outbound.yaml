@@ -1,0 +1,16 @@
+# render-outbound.yaml
+# MisterBot OUTBOUND service (separate from inbound)
+version: "1"
+services:
+  - type: web
+    name: misterbot-outbound
+    runtime: node
+    repo: https://github.com/shaysiboni1-alt/misterbot-realtime
+    plan: starter
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: node outbound_server.js
+    envVars:
+      - fromGroup: misterbot-env
+      - key: OPENAI_API_KEY
+        sync: false
