@@ -1,6 +1,5 @@
 # render-outbound.yaml
 # MisterBot OUTBOUND – Render Blueprint
-
 version: "1"
 services:
   - type: web
@@ -8,11 +7,13 @@ services:
     runtime: node
     plan: starter
     region: frankfurt
-    repo: https://github.com/shaysiboni1-alt/misterbot-outbound
-    branch: main
     buildCommand: npm install
-    startCommand: node outbound_server.js
+    startCommand: npm start
+    autoDeploy: true
     envVars:
-      - fromGroup: misterbot-env
       - key: OPENAI_API_KEY
         sync: false
+      # אל תיצור קבוצת ENV חדשה אם לא בא לך:
+      # פשוט תשים את אותם משתנים בקבוצה הקיימת כפי שעשית, זה בסדר.
+      # אם בכל זאת יש לך ENV Group — תוסיף כאן fromGroup.
+      # - fromGroup: misterbot-env
