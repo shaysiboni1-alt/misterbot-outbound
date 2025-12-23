@@ -4,12 +4,8 @@
  * MisterBot – Outbound Realtime Voice Bot ("נטע")
  * Twilio Media Streams <-> OpenAI Realtime API
  *
- * עקרונות:
- * - הפרדה מלאה מהנכנסות (Server נפרד, Service נפרד).
- * - שפה: עברית כברירת מחדל + מעבר טבעי (MB_LANGUAGES).
- * - Outbound prompts: OUTBOUND_OPENING_SCRIPT + OUTBOUND_GENERAL_PROMPT + OUTBOUND_BUSINESS_PROMPT
- * - סגירה: OUTBOUND_CLOSING_SCRIPT + ניתוק אוטומטי אחרי GRACE (MB_HANGUP_GRACE_MS)
- * - Status/Lead/Webhooks: לא שוברים לכם כלום — מוסיפים OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL לסיכום "מעוניין"
+ * NOTE:
+ * - No dotenv here. Render provides environment variables via its dashboard / env groups.
  */
 
 const express = require("express");
@@ -25,7 +21,8 @@ app.use(express.urlencoded({ extended: true }));
 const PORT = parseInt(process.env.PORT || "10000", 10);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const REALTIME_MODEL = process.env.OUTBOUND_REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17";
+const REALTIME_MODEL =
+  process.env.OUTBOUND_REALTIME_MODEL || "gpt-4o-realtime-preview-2024-12-17";
 
 // OUTBOUND prompts
 const OUTBOUND_OPENING_SCRIPT = (process.env.OUTBOUND_OPENING_SCRIPT || "").trim();
@@ -35,7 +32,8 @@ const OUTBOUND_CLOSING_SCRIPT = (process.env.OUTBOUND_CLOSING_SCRIPT || "").trim
 
 // Shared behavior controls (reuse existing group)
 const MB_LANGUAGES = (process.env.MB_LANGUAGES || "he,en,ru,ar").trim();
-const MB_HANGUP_AFTER_GOODBYE = String(process.env.MB_HANGUP_AFTER_GOODBYE || "true") === "true";
+const MB_HANGUP_AFTER_GOODBYE =
+  String(process.env.MB_HANGUP_AFTER_GOODBYE || "true") === "true";
 const MB_HANGUP_GRACE_MS = parseInt(process.env.MB_HANGUP_GRACE_MS || "4000", 10);
 
 // idle / max call
@@ -52,19 +50,26 @@ const MB_VAD_SUFFIX_MS = parseInt(process.env.MB_VAD_SUFFIX_MS || "150", 10);
 
 // Optional webhooks
 const OUTBOUND_STATUS_WEBHOOK_URL = (process.env.OUTBOUND_STATUS_WEBHOOK_URL || "").trim();
-const OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL = (process.env.OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL || "").trim();
+const OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL =
+  (process.env.OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL || "").trim();
 
 // Existing lead webhook (מהקבוצה הקיימת שלכם)
-const MB_ENABLE_LEAD_CAPTURE = String(process.env.MB_ENABLE_LEAD_CAPTURE || "false") === "true";
-const MB_LEADS_AIRTABLE_WEBHOOK_URL = (process.env.MB_LEADS_AIRTABLE_WEBHOOK_URL || "").trim();
+const MB_ENABLE_LEAD_CAPTURE =
+  String(process.env.MB_ENABLE_LEAD_CAPTURE || "false") === "true";
+const MB_LEADS_AIRTABLE_WEBHOOK_URL =
+  (process.env.MB_LEADS_AIRTABLE_WEBHOOK_URL || "").trim();
 
-// Health
+// -------------------- Health --------------------
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.get("/health", (_req, res) => res.status(200).json({ ok: true }));
 
 // -------------------- Helpers --------------------
 function safeJsonParse(s) {
-  try { return JSON.parse(s); } catch { return null; }
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 function nowIso() {
@@ -86,7 +91,6 @@ async function postJson(url, payload) {
   }
 }
 
-// Very small “summary” fallback if OpenAI fails
 function fallbackSummary(call) {
   const name = call.full_name || "";
   const topic = call.intent_summary || "התעניינות כללית";
@@ -95,18 +99,23 @@ function fallbackSummary(call) {
   return `סיכום שיחה${name ? " עם " + name : ""}: ${topic}. כאב/צורך: ${need}. המשך: ${next}.`;
 }
 
-// Ask OpenAI (text) for a WhatsApp-style summary
-async function generateClientSummary({ transcriptText, full_name, phone, business_type, pain_points }) {
+async function generateClientSummary({
+  transcriptText,
+  full_name,
+  phone,
+  business_type,
+  pain_points,
+}) {
   if (!OPENAI_API_KEY) return null;
 
   const model = process.env.OUTBOUND_SUMMARY_MODEL || "gpt-4.1-mini";
   const sys = `את/ה כותב/ת סיכום קצר מאוד בעברית (עד 5 שורות) לבעל עסק אחרי שיחת מכירה.
-הסיכום צריך להיות ברור, תמציתי, כולל נקודות:
+הסיכום צריך לכלול:
 - מי דיבר (אם יש שם)
 - מה סוג העסק (אם ידוע)
 - מה הכאב/צורך המרכזי
-- מה בקשת הלקוח/השלב הבא
-בלי מחירים. בלי שמות לקוחות אחרים.`;
+- השלב הבא
+בלי מחירים.`;
 
   const user = `פרטים:
 שם: ${full_name || "לא ידוע"}
@@ -114,25 +123,25 @@ async function generateClientSummary({ transcriptText, full_name, phone, busines
 סוג עסק: ${business_type || "לא ידוע"}
 כאבים/צרכים: ${(pain_points && pain_points.length) ? pain_points.join(", ") : "לא ידוע"}
 
-תמלול (אם יש):
-${transcriptText || "(אין תמלול מלא)"}
+תמלול:
+${transcriptText || "(אין תמלול)"}
 `;
 
   try {
     const r = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model,
         temperature: 0.3,
         messages: [
           { role: "system", content: sys },
-          { role: "user", content: user }
-        ]
-      })
+          { role: "user", content: user },
+        ],
+      }),
     });
     const j = await r.json();
     const text = j?.choices?.[0]?.message?.content?.trim();
@@ -155,7 +164,6 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", async (twilioWs, req) => {
-  // Read query params passed by Twilio <Connect><Stream> URL
   const urlObj = new URL(req.url, `http://localhost:${PORT}`);
   const direction = urlObj.searchParams.get("direction") || "outbound";
   const outbound_id = urlObj.searchParams.get("outbound_id") || "";
@@ -174,51 +182,47 @@ wss.on("connection", async (twilioWs, req) => {
     full_name,
     twilio_stream_sid: "",
     call_sid: "",
-    transcript: [],
     transcriptText: "",
-    interested: false,
     collected: {
       full_name: full_name || "",
       business_name: "",
       phone: "",
       reason: "",
       business_type: "",
-      pain_points: []
+      pain_points: [],
     },
     intent_summary: "",
-    next_step: ""
+    next_step: "",
   };
 
-  // Timers
   let idleWarnTimer = null;
   let idleHangTimer = null;
   let maxCallTimer = null;
   let maxCallWarnTimer = null;
 
-  function resetIdleTimers() {
+  function scheduleHangup() {
+    setTimeout(() => {
+      try {
+        twilioWs.close();
+      } catch {}
+    }, Math.max(500, MB_HANGUP_GRACE_MS));
+  }
+
+  function resetIdleTimers(sendAssistantText) {
     if (idleWarnTimer) clearTimeout(idleWarnTimer);
     if (idleHangTimer) clearTimeout(idleHangTimer);
 
     idleWarnTimer = setTimeout(() => {
-      // gentle prompt
       sendAssistantText("רַק לְוַדֵּא שֶׁאֲנִי שׁוֹמַעַת… אֲנַחְנוּ עִדַּיְן בְּקוֹ?");
-
     }, MB_IDLE_WARNING_MS);
 
     idleHangTimer = setTimeout(() => {
-      // close
       if (OUTBOUND_CLOSING_SCRIPT) sendAssistantText(OUTBOUND_CLOSING_SCRIPT);
       if (MB_HANGUP_AFTER_GOODBYE) scheduleHangup();
     }, MB_IDLE_HANGUP_MS);
   }
 
-  function scheduleHangup() {
-    setTimeout(() => {
-      try { twilioWs.close(); } catch {}
-    }, Math.max(500, MB_HANGUP_GRACE_MS));
-  }
-
-  function setMaxTimers() {
+  function setMaxTimers(sendAssistantText) {
     if (maxCallTimer) clearTimeout(maxCallTimer);
     if (maxCallWarnTimer) clearTimeout(maxCallWarnTimer);
 
@@ -237,135 +241,128 @@ wss.on("connection", async (twilioWs, req) => {
   let openaiReady = false;
 
   function sendToTwilioAudio(base64Audio) {
-    // Twilio expects:
-    // { event: "media", media: { payload: "<base64>" } }
-    const msg = {
-      event: "media",
-      media: { payload: base64Audio }
-    };
-    try { twilioWs.send(JSON.stringify(msg)); } catch {}
+    const msg = { event: "media", media: { payload: base64Audio } };
+    try {
+      twilioWs.send(JSON.stringify(msg));
+    } catch {}
   }
 
   function sendAssistantText(text) {
     if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
-    openaiWs.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        modalities: ["audio", "text"],
-        instructions: text
-      }
-    }));
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: { modalities: ["audio", "text"], instructions: text },
+      })
+    );
   }
 
   async function connectOpenAI() {
     if (!OPENAI_API_KEY) {
-      // if no key, just close
-      try { twilioWs.close(); } catch {}
+      try {
+        twilioWs.close();
+      } catch {}
       return;
     }
 
-    openaiWs = new WebSocket("wss://api.openai.com/v1/realtime?model=" + encodeURIComponent(REALTIME_MODEL), {
-      headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        "OpenAI-Beta": "realtime=v1"
+    openaiWs = new WebSocket(
+      "wss://api.openai.com/v1/realtime?model=" + encodeURIComponent(REALTIME_MODEL),
+      {
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          "OpenAI-Beta": "realtime=v1",
+        },
       }
-    });
+    );
 
     openaiWs.on("open", () => {
-      // Configure session
-      const instructions =
-        [
-          OUTBOUND_GENERAL_PROMPT,
-          "",
-          "ידע עסקי (לשאלות ותשובות):",
-          OUTBOUND_BUSINESS_PROMPT
-        ].filter(Boolean).join("\n");
+      const instructions = [
+        OUTBOUND_GENERAL_PROMPT,
+        "",
+        "ידע עסקי (לשאלות ותשובות):",
+        OUTBOUND_BUSINESS_PROMPT,
+        "",
+        `שפות זמינות (MB_LANGUAGES): ${MB_LANGUAGES}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
 
-      openaiWs.send(JSON.stringify({
-        type: "session.update",
-        session: {
-          instructions,
-          // Twilio stream is 8k uLaw
-          input_audio_format: "g711_ulaw",
-          output_audio_format: "g711_ulaw",
-          // server-side VAD tuned by ENV
-          turn_detection: {
-            type: "server_vad",
-            threshold: MB_VAD_THRESHOLD,
-            prefix_padding_ms: MB_VAD_PREFIX_MS,
-            silence_duration_ms: MB_VAD_SILENCE_MS,
-            // suffix not always supported; safe to include as metadata
-          }
-        }
-      }));
+      openaiWs.send(
+        JSON.stringify({
+          type: "session.update",
+          session: {
+            instructions,
+            input_audio_format: "g711_ulaw",
+            output_audio_format: "g711_ulaw",
+            turn_detection: {
+              type: "server_vad",
+              threshold: MB_VAD_THRESHOLD,
+              prefix_padding_ms: MB_VAD_PREFIX_MS,
+              silence_duration_ms: MB_VAD_SILENCE_MS,
+            },
+          },
+        })
+      );
 
       openaiReady = true;
 
-      // Speak opening
       let opening = OUTBOUND_OPENING_SCRIPT || "הַיֵּי… הַאִם הִגַּעְתִּי לְבַעַל/ת הָעֵסֶק?";
       if (opening.includes("{FULL_NAME}")) {
         const name = (call.full_name || "").trim();
-        if (name) opening = opening.replaceAll("{FULL_NAME}", name);
-        else opening = "הַיֵּי… (הַפְסָקָה קְצָרָה) הַאִם הִגַּעְתִּי לְבַעַל/ת הָעֵסֶק?";
+        opening = name
+          ? opening.replaceAll("{FULL_NAME}", name)
+          : "הַיֵּי… (הַפְסָקָה קְצָרָה) הַאִם הִגַּעְתִּי לְבַעַל/ת הָעֵסֶק?";
       }
 
-      openaiWs.send(JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio", "text"],
-          instructions: opening
-        }
-      }));
+      openaiWs.send(
+        JSON.stringify({
+          type: "response.create",
+          response: { modalities: ["audio", "text"], instructions: opening },
+        })
+      );
     });
 
     openaiWs.on("message", (raw) => {
       const msg = safeJsonParse(raw.toString());
       if (!msg) return;
 
-      // audio chunks from OpenAI -> Twilio
       if (msg.type === "response.audio.delta" && msg.delta) {
         sendToTwilioAudio(msg.delta);
         return;
       }
 
-      // transcript (best effort)
       if (msg.type === "response.text.delta" && msg.delta) {
         call.transcriptText += msg.delta;
         return;
       }
 
-      // final text
       if (msg.type === "response.text.done" && msg.text) {
         call.transcriptText += "\n";
-        return;
-      }
-
-      // When OpenAI thinks conversation should end
-      if (msg.type === "response.done") {
-        // no-op
         return;
       }
     });
 
     openaiWs.on("close", () => {
       openaiReady = false;
-      try { twilioWs.close(); } catch {}
+      try {
+        twilioWs.close();
+      } catch {}
     });
 
     openaiWs.on("error", () => {
       openaiReady = false;
-      try { twilioWs.close(); } catch {}
+      try {
+        twilioWs.close();
+      } catch {}
     });
   }
 
-  // Kick
-  resetIdleTimers();
-  setMaxTimers();
+  resetIdleTimers(sendAssistantText);
+  setMaxTimers(sendAssistantText);
   await connectOpenAI();
 
-  // Handle Twilio inbound stream events
   twilioWs.on("message", async (raw) => {
-    resetIdleTimers();
+    resetIdleTimers(sendAssistantText);
 
     const msg = safeJsonParse(raw.toString());
     if (!msg) return;
@@ -373,7 +370,7 @@ wss.on("connection", async (twilioWs, req) => {
     if (msg.event === "start") {
       call.twilio_stream_sid = msg?.start?.streamSid || "";
       call.call_sid = msg?.start?.callSid || "";
-      // optional: send status webhook
+
       if (OUTBOUND_STATUS_WEBHOOK_URL) {
         await postJson(OUTBOUND_STATUS_WEBHOOK_URL, {
           ts: nowIso(),
@@ -383,7 +380,7 @@ wss.on("connection", async (twilioWs, req) => {
           call_sid: call.call_sid,
           stream_sid: call.twilio_stream_sid,
           to: call.to,
-          from: call.from
+          from: call.from,
         });
       }
       return;
@@ -392,29 +389,29 @@ wss.on("connection", async (twilioWs, req) => {
     if (msg.event === "media" && msg.media?.payload) {
       if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || !openaiReady) return;
 
-      // Forward audio to OpenAI
-      openaiWs.send(JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: msg.media.payload
-      }));
+      openaiWs.send(
+        JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: msg.media.payload,
+        })
+      );
       return;
     }
 
     if (msg.event === "stop") {
-      // stream ended
-      try { openaiWs && openaiWs.close(); } catch {}
+      try {
+        openaiWs && openaiWs.close();
+      } catch {}
       return;
     }
   });
 
   twilioWs.on("close", async () => {
-    // cleanup timers
     try { if (idleWarnTimer) clearTimeout(idleWarnTimer); } catch {}
     try { if (idleHangTimer) clearTimeout(idleHangTimer); } catch {}
     try { if (maxCallTimer) clearTimeout(maxCallTimer); } catch {}
     try { if (maxCallWarnTimer) clearTimeout(maxCallWarnTimer); } catch {}
 
-    // final status
     if (OUTBOUND_STATUS_WEBHOOK_URL) {
       await postJson(OUTBOUND_STATUS_WEBHOOK_URL, {
         ts: nowIso(),
@@ -423,26 +420,16 @@ wss.on("connection", async (twilioWs, req) => {
         campaign: call.campaign,
         call_sid: call.call_sid,
         to: call.to,
-        from: call.from
+        from: call.from,
       });
     }
-
-    // Lead + client summary logic:
-    // כרגע “interest” נקבע בפועל אצלכם דרך Airtable/flow.
-    // כדי לא לשבור כלום, אנחנו שולחים סיכום רק אם יש:
-    // - MB_ENABLE_LEAD_CAPTURE=true
-    // - ויש webhook של לידים
-    // - ויש OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL
-    // - ויש לפחות טלפון/שם כלשהו (fallback: from/to)
-    //
-    // אם אתם רוצים חיווי "מעוניין" קשיח: נוכל לקשור את זה ל-Airtable status שמגיע ל-StatusCallback,
-    // או להוסיף parsing חכם בהמשך. כרגע זה safe.
 
     const phoneFallback = (call.collected.phone || call.to || call.from || "").trim();
     const fullNameFallback = (call.collected.full_name || call.full_name || "").trim();
 
     const shouldSendLead = MB_ENABLE_LEAD_CAPTURE && MB_LEADS_AIRTABLE_WEBHOOK_URL;
-    const shouldSendClientSummary = shouldSendLead && OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL && phoneFallback;
+    const shouldSendClientSummary =
+      shouldSendLead && OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL && phoneFallback;
 
     if (shouldSendLead) {
       await postJson(MB_LEADS_AIRTABLE_WEBHOOK_URL, {
@@ -455,7 +442,7 @@ wss.on("connection", async (twilioWs, req) => {
         to: call.to,
         full_name: fullNameFallback,
         phone: phoneFallback,
-        transcript: (call.transcriptText || "").slice(0, 20000)
+        transcript: (call.transcriptText || "").slice(0, 20000),
       });
     }
 
@@ -466,7 +453,7 @@ wss.on("connection", async (twilioWs, req) => {
           full_name: fullNameFallback,
           phone: phoneFallback,
           business_type: call.collected.business_type,
-          pain_points: call.collected.pain_points
+          pain_points: call.collected.pain_points,
         })) || fallbackSummary(call);
 
       await postJson(OUTBOUND_CLIENT_SUMMARY_WEBHOOK_URL, {
@@ -476,7 +463,7 @@ wss.on("connection", async (twilioWs, req) => {
         call_sid: call.call_sid,
         phone: phoneFallback,
         full_name: fullNameFallback,
-        summary: summaryText
+        summary: summaryText,
       });
     }
   });
