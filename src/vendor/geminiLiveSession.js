@@ -287,7 +287,12 @@ class GeminiLiveSession {
     this._call = {
       callSid: safeStr(this.meta?.callSid),
       streamSid: safeStr(this.meta?.streamSid),
-      source: safeStr(this.meta?.source) || "VoiceBot_Blank",
+      source: safeStr(this.meta?.source) || "Mr.Bot",
+      call_type: safeStr(this.meta?.call_type) || 'inbound',
+      lead_id: safeStr(this.meta?.lead_id),
+      campaign_id: safeStr(this.meta?.campaign_id),
+      contact_name: safeStr(this.meta?.contact_name),
+      business_name: safeStr(this.meta?.business_name),
       caller_raw: callerInfo.value,
       caller_withheld: callerInfo.withheld,
       called: safeStr(this.meta?.called),
@@ -296,6 +301,11 @@ class GeminiLiveSession {
       conversationLog: [],
       recording_sid: "",
       finalized: false,
+      call_type: safeStr(this.meta?.call_type) || 'inbound',
+      lead_id: safeStr(this.meta?.lead_id),
+      campaign_id: safeStr(this.meta?.campaign_id),
+      contact_name: safeStr(this.meta?.contact_name),
+      business_name: safeStr(this.meta?.business_name),
     };
 
     this._passiveCtx = null;
@@ -345,6 +355,10 @@ class GeminiLiveSession {
         display_name: callerName,
         language_locked: this._langState.lockedLanguage,
         caller_withheld: this._call.caller_withheld,
+        call_type: safeStr(this.meta?.call_type) || 'inbound',
+        contact_name: safeStr(this.meta?.contact_name),
+        business_name: safeStr(this.meta?.business_name),
+        lead_id: safeStr(this.meta?.lead_id),
       });
 
       const vadPrefix = clampNum(env.MB_VAD_PREFIX_MS ?? 40, 20, 600, 40);
@@ -754,10 +768,12 @@ class GeminiLiveSession {
 
     const openingPack = getCachedOpening({
       ssot: this.ssot,
-      callerName,
+      callerName: callerName || safeStr(this.meta?.contact_name),
       isReturning,
-      timeZone: env.TIME_ZONE || "Asia/Jerusalem",
+      timeZone: env.TIME_ZONE || 'Asia/Jerusalem',
       ttlMs: Number(env.MB_OPENING_CACHE_TTL_MS || 300000),
+      callType: safeStr(this.meta?.call_type) || 'inbound',
+      businessName: safeStr(this.meta?.business_name),
     });
 
     const opening = openingPack.opening;
@@ -846,6 +862,11 @@ class GeminiLiveSession {
         caller_withheld: this._call.caller_withheld,
         finalize_reason: reason || "",
         language_locked: this._langState.lockedLanguage,
+        call_type: this._call.call_type || safeStr(this.meta?.call_type) || 'inbound',
+        lead_id: this._call.lead_id || safeStr(this.meta?.lead_id),
+        campaign_id: this._call.campaign_id || safeStr(this.meta?.campaign_id),
+        contact_name: this._call.contact_name || safeStr(this.meta?.contact_name),
+        business_name: this._call.business_name || safeStr(this.meta?.business_name),
       };
 
       if (this._passiveCtx && passiveCallContext?.finalizeCtx) {

@@ -398,6 +398,11 @@ async function finalizePipeline({ snapshot, ssot, env, logger, senders }) {
         snapshot?.call?.finalize_reason || snapshot?.finalize_reason || null,
       passive_context: snapshot?.call?.passive_context || null,
       language_locked: snapshot?.call?.language_locked || null,
+      call_type: snapshot?.call?.call_type || null,
+      lead_id: snapshot?.call?.lead_id || null,
+      campaign_id: snapshot?.call?.campaign_id || null,
+      contact_name: snapshot?.call?.contact_name || null,
+      business_name: snapshot?.call?.business_name || null,
     };
 
     const conversationLog = Array.isArray(snapshot?.conversationLog)
@@ -508,6 +513,9 @@ async function finalizePipeline({ snapshot, ssot, env, logger, senders }) {
       recording_sid: safeStr(recording?.recording_sid),
       recording_url_public: safeStr(recording?.recording_url_public),
       conversationLog,
+      lead_id: safeStr(call.lead_id),
+      campaign_id: safeStr(call.campaign_id),
+      call_type: safeStr(call.call_type),
       parsedLeadCollection: {
         intent: safeStr(parsedLead.intent),
         full_name: safeStr(parsedLead.full_name),

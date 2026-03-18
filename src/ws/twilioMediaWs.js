@@ -90,6 +90,11 @@ function installTwilioMediaWs(server) {
           caller: customParameters?.caller,
           called: customParameters?.called,
           source: customParameters?.source,
+          call_type: customParameters?.call_type || 'inbound',
+          lead_id: customParameters?.lead_id || '',
+          campaign_id: customParameters?.campaign_id || '',
+          contact_name: customParameters?.contact_name || '',
+          business_name: customParameters?.business_name || '',
         };
 
         // Best-effort caller recognition. No impact on lead parsing.
