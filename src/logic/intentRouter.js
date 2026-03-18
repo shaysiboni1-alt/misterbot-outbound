@@ -88,29 +88,64 @@ function applyOutboundHeuristics(prepared, candidate) {
   const compact = nv.replace(/\s+/g, "");
   const id = String(candidate.intent_id || "");
 
-  const anyInterested = /(רלוונטי|יכול להתאים|יכול להיות לי|נשמע טוב|מעוניי?ן|חיובי|כן)/u.test(nv) || compact.includes("יכוללהתאים");
-  const asksHow = /(מה אתם יכולים|איך זה עובד|תגיד.*קצת|ספר.*קצת|מה זה נותן|מה זה כולל|על המערכת|על השירות)/u.test(nv);
-  const pain = /(לא מצליח לענות|לא עונה לכל השיחות|מפספס שיחות|עמוס|קובע תורים|לידים|מענה טלפוני|מזכירה|חנות|חנות פרחים)/u.test(nv) || compact.includes("מפספסשיחות");
-  const callback = /(תחזרו|שיחזרו|יחזרו אלי|חוזר עליי|חזרו אליי)/u.test(nv);
-  const notRelevant = /(לא רלוונטי|לא מעוניי?ן|עזוב|לא צריך|יש לי כבר)/u.test(nv);
+  const anyInterested =
+    /(רלוונטי|יכול להתאים|יכול להיות לי|נשמע טוב|מעוניי?ן|חיובי|כן|סבבה|אוקיי|אוקי|ברור)/u.test(nv) ||
+    /יכוללהתאים|נשמעטוב|רלוונטי/.test(compact);
+  const asksHow =
+    /(מה אתם יכולים|איך זה עובד|תסבירי|תסביר|ספרי לי|תספרי לי|ספר לי|מה זה נותן|מה זה כולל|על המערכת|על השירות|מה אתם מציעים|מה את מציעה)/u.test(nv) ||
+    /איךזהעובד|מהאתםמציעים|מהאתמציעה|ספריליקצת|תספריליקצת/.test(compact);
+  const asksWho =
+    /(מי אתם|מי את|מה אתם|מה את|מיסטר בוט מי אתם)/u.test(nv) ||
+    /מיאת|מיאתם|מהאתם|מהאת/.test(compact);
+  const asksSource =
+    /(איך הגעת אליי|איך הגעתם אליי|מאיפה הגעת אליי|מאיפה הגעתם אליי|מאיפה יש לך את הטלפון שלי|מאיפה יש לכם את המספר שלי|איפה מצאתם את המספר שלי)/u.test(nv) ||
+    /איךהגעתאליי|איךהגעתםאליי|מאיפהישלךאתהטלפוןשלי|מאיפהישלכםאתהמספרשלי|איפהמצאתםאתהמספרשלי/.test(compact);
+  const slowDown =
+    /(דברי לאט|תדברי לאט|לא הבנתי|לא שמעתי|מהר מדי|רגע שנייה|שנייה רגע|תסבירי יותר לאט)/u.test(nv) ||
+    /לאהבנתי|מהרמדי|דברילאט|תסבירילאט|רגעשנייה/.test(compact);
+  const pain =
+    /(לא מצליח לענות|לא עונה לכל השיחות|מפספס שיחות|עמוס|קובע תורים|לידים|מענה טלפוני|מזכירה|שירות לקוחות|מכירות|לא רוצה לפספס|לא תפספס|קשה לענות)/u.test(nv) ||
+    /מפספסשיחות|לאמצליחלענות|שירותלקוחות|קובעתורים|תופסלידים|לארוצהלפספס/.test(compact);
+  const business =
+    /(מסעדה|חנות|חנות פרחים|קליניקה|מרפאה|מרפאת שיניים|משרד|עסק|סוכנות|מספרה|סטודיו|עורך דין|עו״ד|רואה חשבון|רופא שיניים)/u.test(nv) ||
+    /מרפאתשיניים|חנותפרחים/.test(compact);
+  const callback = /(תחזרו|שיחזרו|יחזרו אליי|חוזר אליי|תחזרי אליי|חזרה מחר|נדבר מחר|נדבר אחר כך)/u.test(nv);
+  const notInterested = /(לא רלוונטי|לא מעוניי?ן|עזוב|לא צריך|לא רוצה|אין צורך)/u.test(nv);
+  const existingSolution = /(יש לי כבר|כבר יש לי|כבר יש לנו|כבר מטפלים בזה|כבר יש מוקד|כבר יש מזכירה)/u.test(nv);
 
-  if (/interested|relevant|qualified|positive/.test(id) && anyInterested) {
+  if (/outbound_who_are_you/.test(id) && asksWho) {
+    candidate.score += 18;
+    candidate.matched_triggers.push("OUTBOUND_WHO");
+  }
+  if (/outbound_how_did_you_get_to_me/.test(id) && asksSource) {
+    candidate.score += 18;
+    candidate.matched_triggers.push("OUTBOUND_SOURCE");
+  }
+  if (/(outbound_slow_down|outbound_not_understood)/.test(id) && slowDown) {
+    candidate.score += 18;
+    candidate.matched_triggers.push("OUTBOUND_SLOW");
+  }
+  if (/(interested|relevant|qualified|positive)/.test(id) && anyInterested) {
     candidate.score += 12;
     candidate.matched_triggers.push("OUTBOUND_POSITIVE");
   }
-  if (/ask_how_it_works|how_it_works|general_info|info/.test(id) && asksHow) {
-    candidate.score += 12;
+  if (/(ask_how_it_works|what_do_you_offer|general_info|info)/.test(id) && asksHow) {
+    candidate.score += 14;
     candidate.matched_triggers.push("OUTBOUND_EXPLAIN");
   }
-  if (/need|pain|qualification|capture/.test(id) && pain) {
-    candidate.score += 10;
+  if (/(business_context|need|pain|qualification|capture)/.test(id) && (pain || business)) {
+    candidate.score += 12;
     candidate.matched_triggers.push("OUTBOUND_NEED");
   }
   if (/callback/.test(id) && callback) {
     candidate.score += 14;
     candidate.matched_triggers.push("OUTBOUND_CALLBACK");
   }
-  if (/not_relevant|not_interested|existing_solution/.test(id) && notRelevant) {
+  if (/existing_solution/.test(id) && existingSolution) {
+    candidate.score += 14;
+    candidate.matched_triggers.push("OUTBOUND_EXISTING");
+  }
+  if (/(not_relevant|not_interested)/.test(id) && notInterested) {
     candidate.score += 14;
     candidate.matched_triggers.push("OUTBOUND_NEGATIVE");
   }
@@ -147,17 +182,33 @@ function detectIntent(input, maybeIntents, maybeOpts = {}) {
   if (String(opts.callType || '').trim().toLowerCase() === 'outbound') {
     const nv = prepared.normalized || '';
     const compact = nv.replace(/\s+/g, '');
-    if (/(איך הגעת אליי|איך הגעתם אליי|מאיפה הגעת|מאיפה הגעתם)/u.test(nv) || compact.includes('איךהגעתאליי') || compact.includes('איךהגעתםאליי')) {
-      return { intent_id: 'outbound_how_did_you_get_to_me', intent_type: 'outbound', score: 40, priority: 200, matched_triggers: ['HOW_REACHED_ME'] };
+
+    if (/(מי אתם|מי את|מה אתם|מה את)/u.test(nv) || /מיאתם|מיאת|מהאתם|מהאת/.test(compact)) {
+      return { intent_id: 'outbound_who_are_you', intent_type: 'outbound', score: 48, priority: 220, matched_triggers: ['WHO_ARE_YOU'] };
     }
-    if (/(מה את מציעה|מה אתם מציעים|מה אתם יכולים|מה השירות|מה זה נותן|איך זה עובד|ספרי לי|תגידי לי קצת)/u.test(nv) || compact.includes('מהאתמציעה') || compact.includes('מהאתםמציעים') || compact.includes('איךזהעובד')) {
-      return { intent_id: 'outbound_what_do_you_offer', intent_type: 'outbound', score: 40, priority: 200, matched_triggers: ['WHAT_OFFER'] };
+    if (/(איך הגעת אליי|איך הגעתם אליי|מאיפה הגעת אליי|מאיפה הגעתם אליי|מאיפה יש לך את הטלפון שלי|מאיפה יש לכם את המספר שלי|איפה מצאתם את המספר שלי)/u.test(nv) || /איךהגעתאליי|איךהגעתםאליי|מאיפהישלךאתהטלפוןשלי|מאיפהישלכםאתהמספרשלי|איפהמצאתםאתהמספרשלי/.test(compact)) {
+      return { intent_id: 'outbound_how_did_you_get_to_me', intent_type: 'outbound', score: 48, priority: 220, matched_triggers: ['HOW_REACHED_ME'] };
     }
-    if (/(יש לי מסעדה|מסעדה|חנות|חנות פרחים|קליניקה|משרד|עסק)/u.test(nv)) {
-      return { intent_id: 'outbound_business_context', intent_type: 'qualification', score: 32, priority: 180, matched_triggers: ['BUSINESS_CONTEXT'] };
+    if (/(דברי לאט|תדברי לאט|לא הבנתי|לא שמעתי|מהר מדי|רגע שנייה|שנייה רגע|תסבירי יותר לאט)/u.test(nv) || /לאהבנתי|מהרמדי|דברילאט|תסבירילאט|רגעשנייה/.test(compact)) {
+      return { intent_id: 'outbound_slow_down', intent_type: 'outbound', score: 46, priority: 215, matched_triggers: ['SLOW_DOWN'] };
     }
-    if (/(כן|רלוונטי|יכול להתאים|נשמע טוב|חיובי|מעניין)/u.test(nv)) {
-      return { intent_id: 'outbound_interested', intent_type: 'qualification', score: 30, priority: 170, matched_triggers: ['INTERESTED'] };
+    if (/(מה אתם מציעים|מה את מציעה|מה אתם יכולים|מה השירות|מה זה נותן|מה זה כולל|איך זה עובד|ספרי לי|תספרי לי|ספר לי|תסבירי לי)/u.test(nv) || /מהאתםמציעים|מהאתמציעה|מהאתםיכולים|מהזהנותן|מהזהכולל|איךזהעובד|ספריליקצת|תספריליקצת|תסבירילימה/.test(compact)) {
+      return { intent_id: 'outbound_what_do_you_offer', intent_type: 'outbound', score: 44, priority: 210, matched_triggers: ['WHAT_OFFER'] };
+    }
+    if (/(לא רלוונטי|לא מעוניי?ן|לא צריך|לא רוצה|אין צורך)/u.test(nv) || /לארלוונטי|לאמעוניין|לאצריך|לארוצה/.test(compact)) {
+      return { intent_id: 'outbound_not_interested', intent_type: 'objection', score: 40, priority: 205, matched_triggers: ['NOT_INTERESTED'] };
+    }
+    if (/(יש לי כבר|כבר יש לי|כבר יש לנו|כבר מטפלים בזה|כבר יש מוקד|כבר יש מזכירה)/u.test(nv) || /כברישלי|כברישלנו|כברישמוקד|כברישמזכירה/.test(compact)) {
+      return { intent_id: 'outbound_already_has_solution', intent_type: 'objection', score: 40, priority: 205, matched_triggers: ['ALREADY_HAVE'] };
+    }
+    if (/(תחזרו|שיחזרו|יחזרו אליי|חוזר אליי|תחזרי אליי|נדבר מחר|חזרה מחר|חזרה אחר כך)/u.test(nv) || /תחזרואליי|שיחזרו|יחזוראליי|נדברמחר/.test(compact)) {
+      return { intent_id: 'outbound_callback_later', intent_type: 'callback', score: 40, priority: 205, matched_triggers: ['CALLBACK'] };
+    }
+    if (/(מסעדה|חנות|חנות פרחים|קליניקה|מרפאה|מרפאת שיניים|משרד|עסק|סוכנות|מספרה|סטודיו|עורך דין|רואה חשבון)/u.test(nv) || /מרפאתשיניים|חנותפרחים/.test(compact)) {
+      return { intent_id: 'outbound_business_context', intent_type: 'qualification', score: 36, priority: 200, matched_triggers: ['BUSINESS_CONTEXT'] };
+    }
+    if (/(כן|רלוונטי|יכול להתאים|נשמע טוב|חיובי|מעניין|בכיף|סבבה)/u.test(nv) || /יכוללהתאים|נשמעטוב|רלוונטי/.test(compact)) {
+      return { intent_id: 'outbound_interested', intent_type: 'qualification', score: 34, priority: 195, matched_triggers: ['INTERESTED'] };
     }
   }
 
