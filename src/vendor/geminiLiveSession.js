@@ -120,8 +120,8 @@ function buildIntentsContext(intents) {
 function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
   const settings = ssot?.settings || {};
   const prompts = ssot?.prompts || {};
-  const intents = ssot?.intents || [];
-
+  const allIntents = Array.isArray(ssot?.intents) ? ssot.intents : [];
+  const callType = safeStr(runtimeMeta?.call_type || "inbound").toLowerCase();
   const defaultLang =
     safeStr(runtimeMeta?.language_locked) ||
     safeStr(settings.DEFAULT_LANGUAGE) ||
@@ -129,82 +129,131 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
   const callerName =
     safeStr(runtimeMeta?.caller_name) ||
     safeStr(runtimeMeta?.display_name) ||
+    safeStr(runtimeMeta?.contact_name) ||
     "";
   const callerWithheld = !!runtimeMeta?.caller_withheld;
+  const relevantIntents = callType === "outbound"
+    ? allIntents.filter(
+        (it) =>
+          /^outbound_/i.test(String(it?.intent_id || "")) ||
+          /^(sales|outbound|qualification|objection|callback|lead)$/i.test(
+            String(it?.intent_type || "")
+          )
+      )
+    : allIntents.filter((it) => !/^outbound_/i.test(String(it?.intent_id || "")));
 
   const sections = [];
 
-  sections.push([
-    "IDENTITY (NON-NEGOTIABLE):",
-    "- You are the business phone assistant defined by SETTINGS and PROMPTS.",
-    "- Never identify as an AI, model, assistant model, or LLM.",
-    "- Speak briefly, naturally, and only as a customer-facing phone representative.",
-    "- NEVER output analysis, internal planning, reasoning, markdown, bullets, JSON, stage labels, or notes.",
-    "- NEVER say things like 'I understand', 'I will', 'I'm now', 'I've processed', 'composing', 'confirming', or any meta explanation.",
-    "- Output ONLY the final customer-facing sentence(s) to be spoken aloud.",
-    "- If you are about to say anything meta, stop and instead say the customer-facing sentence only.",
-  ].join("\n"));
+  sections.push(
+    [
+      "IDENTITY (NON-NEGOTIABLE):",
+      "- You are the customer-facing phone representative of Mr.Bot.",
+      "- Never say you are AI, model, system, assistant model, or LLM.",
+      "- Speak naturally in Hebrew, in short spoken sentences.",
+      "- Never output markdown, bullets, JSON, notes, or internal reasoning.",
+      "- Every spoken response must be a complete customer-facing sentence.",
+      "- Never answer with only the caller name. If you use the caller name, continue with a full sentence in the same turn.",
+    ].join("\n")
+  );
 
-  sections.push([
-    "LANGUAGE POLICY (HARD RULE):",
-    `- locked_language=${defaultLang}`,
-    "- Start and stay in Hebrew by default.",
-    "- Do NOT switch language because of accent, pronunciation, or a foreign-sounding name.",
-    "- Switch language only if the caller explicitly asks to switch, or clearly speaks in a supported language for multiple turns.",
-    "- If in doubt, remain in Hebrew.",
-  ].join("\n"));
+  sections.push(
+    [
+      "LANGUAGE POLICY:",
+      `- locked_language=${defaultLang}`,
+      "- Start and stay in Hebrew unless the caller explicitly asks to switch.",
+      "- Do not switch language because of accent or a foreign-sounding name.",
+    ].join("\n")
+  );
 
-  sections.push([
-    "DIALOG POLICY (HARD RULE):",
-    "- Ask only ONE question at a time.",
-    "- Never bundle multiple data-collection questions into one turn.",
-    "- Prefer short, focused follow-up questions.",
-    "- If the caller corrects you, apologize briefly, correct course, and continue naturally.",
-    "- If the caller says something like 'אני אישה' or 'אני בת', do NOT treat it as a name.",
-    "- If the caller corrects gender/name confusion, acknowledge briefly and then ask for the name again only if needed for the request.",
-    "- If the call is only for information, answer briefly and do not force lead capture.",
-    "- If the caller confirms callback to the identified number, immediately acknowledge, close politely, and end the flow.",
-  ].join("\n"));
+  if (callType === "outbound") {
+    sections.push(
+      [
+        "OUTBOUND CALL MODE (HARD RULES):",
+        "- This is an outbound call initiated by Mr.Bot to check relevance for a business phone-answering solution.",
+        "- Main value: human-sounding phone answering, virtual receptionist, lead capture, appointment booking, customer service, and sales assistance.",
+        "- Do NOT ask 'איך אפשר לעזור' or behave like inbound customer support.",
+        "- Your goal is to confirm relevance, understand the business need, explain the service briefly, and move to a sales follow-up if there is interest.",
+        "- When the caller asks what the service does, answer concretely in 1-2 short sentences with examples.",
+        "- If the caller shares pain like missed calls, lead loss, overload, booking, or customer-service pressure, acknowledge it briefly and explain how Mr.Bot helps.",
+        "- Ask only one focused follow-up question at a time.",
+        "- If the caller is interested, propose a callback from a sales manager or continuation with more details.",
+        "- Never stall, never repeat only the name, and never give one-word answers.",
+      ].join("\n")
+    );
+  } else {
+    sections.push(
+      [
+        "INBOUND CALL MODE (HARD RULES):",
+        "- Handle inbound calls briefly and naturally.",
+        "- Ask only one question at a time.",
+        "- If the call is informational, answer briefly and do not force lead capture.",
+      ].join("\n")
+    );
+  }
 
   if (callerName) {
-    sections.push([
-      "CALLER MEMORY POLICY:",
-      `- Known caller name: "${callerName}"`,
-      "- Treat it as correct unless the caller explicitly corrects it.",
-      "- Do not ask for the caller name again if it is already known.",
-    ].join("\n"));
+    sections.push(
+      [
+        "CALLER MEMORY POLICY:",
+        `- Known caller name: \"${callerName}\"`,
+        "- Treat it as correct unless the caller explicitly corrects it.",
+        "- Do not ask for the name again unless needed.",
+      ].join("\n")
+    );
   }
 
   if (callerWithheld) {
-    sections.push([
-      "WITHHELD NUMBER POLICY:",
-      "- The caller number is withheld/private.",
-      "- If the caller leaves a request or asks for a callback, you MUST collect a callback number explicitly.",
-      "- Do not say you will return to the identified number because there is no usable caller ID.",
-    ].join("\n"));
+    sections.push(
+      [
+        "WITHHELD NUMBER POLICY:",
+        "- The caller number is withheld/private.",
+        "- If callback is needed, collect a callback number explicitly.",
+      ].join("\n")
+    );
   }
 
-  if (prompts.MASTER_PROMPT) {
-    sections.push(`MASTER_PROMPT:\n${safeStr(prompts.MASTER_PROMPT)}`);
+  const promptKeys =
+    callType === "outbound"
+      ? [
+          "OUTBOUND_MASTER_PROMPT",
+          "OUTBOUND_GUARDRAILS_PROMPT",
+          "QUALIFICATION_PROMPT",
+          "OBJECTION_HANDLING_PROMPT",
+          "CALLBACK_CAPTURE_PROMPT",
+          "OUTBOUND_LEAD_PARSER_PROMPT",
+          "SCRIPT_PROFILE_PROMPT",
+        ]
+      : [
+          "MASTER_PROMPT",
+          "GUARDRAILS_PROMPT",
+          "KB_PROMPT",
+          "LEAD_CAPTURE_PROMPT",
+          "INTENT_ROUTER_PROMPT",
+        ];
+
+  for (const key of promptKeys) {
+    if (prompts[key]) sections.push(`${key}:\n${safeStr(prompts[key])}`);
   }
-  if (prompts.GUARDRAILS_PROMPT) {
-    sections.push(`GUARDRAILS_PROMPT:\n${safeStr(prompts.GUARDRAILS_PROMPT)}`);
-  }
-  if (prompts.KB_PROMPT) {
-    sections.push(`KB_PROMPT:\n${safeStr(prompts.KB_PROMPT)}`);
-  }
-  if (prompts.LEAD_CAPTURE_PROMPT) {
-    sections.push(`LEAD_CAPTURE_PROMPT:\n${safeStr(prompts.LEAD_CAPTURE_PROMPT)}`);
-  }
-  if (prompts.INTENT_ROUTER_PROMPT) {
-    sections.push(`INTENT_ROUTER_PROMPT:\n${safeStr(prompts.INTENT_ROUTER_PROMPT)}`);
+
+  if (callType === "outbound" && Array.isArray(ssot?.outbound_script) && ssot.outbound_script.length) {
+    const scriptLines = ssot.outbound_script
+      .slice(0, 12)
+      .map((row) => {
+        const step = safeStr(row.step || row.Step || row.stage || row.name);
+        const desc = safeStr(row.description || row.Description || row.value || row.text);
+        const ex = safeStr(row.example_text || row.example || row.sample);
+        return `- ${step || "step"}: ${desc}${ex ? ` | example: ${ex}` : ""}`.trim();
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (scriptLines) sections.push(`OUTBOUND_SCRIPT:\n${scriptLines}`);
   }
 
   const settingsContext = buildSettingsContext(settings);
   if (settingsContext) sections.push(`SETTINGS_CONTEXT:\n${settingsContext}`);
 
-  const intentsContext = buildIntentsContext(intents);
-  if (intentsContext) sections.push(`INTENTS_TABLE:\n${intentsContext}`);
+  const intentsContext = buildIntentsContext(relevantIntents.length ? relevantIntents : allIntents);
+  if (intentsContext) sections.push(`RELEVANT_INTENTS:\n${intentsContext}`);
 
   return sections.filter(Boolean).join("\n\n---\n\n").trim();
 }
@@ -695,6 +744,7 @@ class GeminiLiveSession {
       const intent = detectIntent({
         text: nlp.normalized || nlp.raw,
         intents: this.ssot?.intents || [],
+        callType: this._call.call_type,
       });
 
       logger.info("INTENT_DETECTED", {
