@@ -52,7 +52,7 @@ function getOpeningScriptFromSSOT(ssot, vars) {
   if (callType === "outbound") {
     tpl = (isReturning && safeStr(settings.OUTBOUND_OPENING_SCRIPT_RETURNING)) || safeStr(settings.OUTBOUND_OPENING_SCRIPT);
     if (!tpl) {
-      tpl = "{GREETING}, מדבר/ת ממיסטר בוט. אפשר רגע לדבר עם {CALLER_NAME} לגבי מענה טלפוני חכם לעסק?";
+      tpl = "{GREETING}, מדבר/ת ממיסטר בוט. רציתי לבדוק אם מענה טלפוני חכם לעסק יכול להיות רלוונטי אצלכם.";
     }
   } else {
     tpl = (isReturning && safeStr(settings.OPENING_SCRIPT_RETURNING)) || safeStr(settings.OPENING_SCRIPT) || "שלום! איך נוכל לעזור?";

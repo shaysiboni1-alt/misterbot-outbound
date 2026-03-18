@@ -141,10 +141,27 @@ function detectIntent(input, maybeIntents, maybeOpts = {}) {
   }
 
   intents = filterIntentsByCallType(intents, opts.callType);
-  if (!intents.length) return emptyIntent();
-
   const prepared = buildVariants(textRaw);
   const lang = opts.forceLang || prepared.lang || "unknown";
+
+  if (String(opts.callType || '').trim().toLowerCase() === 'outbound') {
+    const nv = prepared.normalized || '';
+    const compact = nv.replace(/\s+/g, '');
+    if (/(איך הגעת אליי|איך הגעתם אליי|מאיפה הגעת|מאיפה הגעתם)/u.test(nv) || compact.includes('איךהגעתאליי') || compact.includes('איךהגעתםאליי')) {
+      return { intent_id: 'outbound_how_did_you_get_to_me', intent_type: 'outbound', score: 40, priority: 200, matched_triggers: ['HOW_REACHED_ME'] };
+    }
+    if (/(מה את מציעה|מה אתם מציעים|מה אתם יכולים|מה השירות|מה זה נותן|איך זה עובד|ספרי לי|תגידי לי קצת)/u.test(nv) || compact.includes('מהאתמציעה') || compact.includes('מהאתםמציעים') || compact.includes('איךזהעובד')) {
+      return { intent_id: 'outbound_what_do_you_offer', intent_type: 'outbound', score: 40, priority: 200, matched_triggers: ['WHAT_OFFER'] };
+    }
+    if (/(יש לי מסעדה|מסעדה|חנות|חנות פרחים|קליניקה|משרד|עסק)/u.test(nv)) {
+      return { intent_id: 'outbound_business_context', intent_type: 'qualification', score: 32, priority: 180, matched_triggers: ['BUSINESS_CONTEXT'] };
+    }
+    if (/(כן|רלוונטי|יכול להתאים|נשמע טוב|חיובי|מעניין)/u.test(nv)) {
+      return { intent_id: 'outbound_interested', intent_type: 'qualification', score: 30, priority: 170, matched_triggers: ['INTERESTED'] };
+    }
+  }
+
+  if (!intents.length) return emptyIntent();
 
   let best = null;
 

@@ -312,6 +312,7 @@ class GeminiLiveSession {
     this.ready = false;
     this.closed = false;
     this._greetingSent = false;
+    this._openingQueuedUntilFirstUserUtterance = String(this.meta?.call_type || '').toLowerCase() === 'outbound';
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
     this._closingSentAfterCallback = false;
@@ -462,7 +463,7 @@ class GeminiLiveSession {
         return;
       }
 
-      if ((msg?.setupComplete || msg?.serverContent) && !this._greetingSent) {
+      if ((msg?.setupComplete || msg?.serverContent) && !this._greetingSent && !this._openingQueuedUntilFirstUserUtterance) {
         this._greetingSent = true;
         this._sendProactiveOpening();
       }
@@ -568,9 +569,14 @@ class GeminiLiveSession {
     const explicitSwitch = detectExplicitLanguageSwitch(
       nlp.raw || nlp.normalized || ""
     );
+    const outboundMode = String(this._call?.call_type || '').toLowerCase() === 'outbound';
 
     if (explicitSwitch) {
       this._langState.lockedLanguage = explicitSwitch;
+      this._langState.candidateLanguage = null;
+      this._langState.candidateHits = 0;
+    } else if (outboundMode) {
+      this._langState.lockedLanguage = 'he';
       this._langState.candidateLanguage = null;
       this._langState.candidateHits = 0;
     } else if (
@@ -678,6 +684,12 @@ class GeminiLiveSession {
 
     if (who === "user") {
       this._applyLanguageDecision(nlp);
+      const meaningfulUserText = String(nlp.normalized || nlp.raw || '').trim();
+      if (!this._greetingSent && this._openingQueuedUntilFirstUserUtterance && meaningfulUserText && meaningfulUserText !== '.' && meaningfulUserText.length >= 1) {
+        this._greetingSent = true;
+        this._openingQueuedUntilFirstUserUtterance = false;
+        this._sendProactiveOpening();
+      }
     }
 
     logger.info(`UTTERANCE ${who}`, {
@@ -746,6 +758,21 @@ class GeminiLiveSession {
         intents: this.ssot?.intents || [],
         callType: this._call.call_type,
       });
+
+      if (String(this._call.call_type || '').toLowerCase() === 'outbound' && this.ws && this.ready && !this.closed) {
+        const steer = [
+          'הלקוח אמר עכשיו: ' + (nlp.normalized || nlp.raw),
+          'עני בעברית בלבד.',
+          'עני במשפט מלא אחד עד שניים, לא יותר.',
+          'אל תחזרי רק על השם, אל תעני במילה אחת, ואל תתרגמי לאנגלית.',
+          'אם הלקוח שאל איך הגעתם אליו, הסבירי בקצרה שמדובר בפנייה יזומה לעסקים שעשויים להרוויח ממענה טלפוני חכם.',
+          'אם הלקוח שאל מה אתם מציעים, הסבירי בקצרה על מענה טלפוני חכם, תפיסת לידים, קביעת תורים ושירות לקוחות.',
+          'אם הלקוח ציין סוג עסק, חברי את ההסבר לסוג העסק שלו.',
+        ].join('\n');
+        try {
+          this.ws.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: steer }] }], turnComplete: true } }));
+        } catch {}
+      }
 
       logger.info("INTENT_DETECTED", {
         ...this.meta,
@@ -830,6 +857,8 @@ class GeminiLiveSession {
 
     const userKickoff = [
       "ענה עכשיו רק במשפט הבא, בדיוק כפי שהוא, בלי הקדמה, בלי הסבר, בלי מחשבות בקול ובלי שום טקסט נוסף.",
+      "חובה לענות בעברית בלבד.",
+      "אסור לענות במילה אחת, בשם בלבד, או באנגלית.",
       "אחרי המשפט עצור והמתן ללקוח.",
       opening,
     ].join("\n");
