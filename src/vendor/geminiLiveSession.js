@@ -278,6 +278,80 @@ function scrubReasoningText(text) {
   return "";
 }
 
+
+function wordCount(text) {
+  return safeStr(text).split(/\s+/).filter(Boolean).length;
+}
+
+function compactText(text) {
+  return safeStr(text).replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function isUnknownOrNoiseUtterance(nlp) {
+  const raw = safeStr(nlp?.raw || nlp?.normalized);
+  const norm = safeStr(nlp?.normalized || nlp?.raw);
+  const compact = compactText(norm);
+  if (!compact) return true;
+  if (/<noise>|^\.+$/iu.test(raw) || /^\.+$/u.test(norm)) return true;
+  if (nlp?.lang === 'unknown' && compact.length <= 6) return true;
+  if (/^[\u0600-\u06FF]+$/u.test(compact)) return true;
+  return false;
+}
+
+function isMeaningfulFirstUtterance(nlp) {
+  const norm = safeStr(nlp?.normalized || nlp?.raw);
+  const compact = compactText(norm);
+  if (isUnknownOrNoiseUtterance(nlp)) return false;
+  if (/^(שלום|הלו|כן|מי זה|מה זה|רגע|שנייה)$/u.test(norm)) return true;
+  if (nlp?.lang === 'he' && wordCount(norm) >= 2) return true;
+  if (compact.length >= 8 && nlp?.lang === 'he') return true;
+  return false;
+}
+
+function buildScriptedOutboundReply(intent, nlp, meta) {
+  const norm = safeStr(nlp?.normalized || nlp?.raw);
+  const compact = compactText(norm);
+  const business = safeStr(meta?.business_name);
+  const intentId = String(intent?.intent_id || 'other');
+
+  if (intentId === 'outbound_slow_down' || /(לא\s*הבנתי|מהר\s*מדי|דברי\s*לאט|תסבירי\s*לאט)/u.test(norm)) {
+    return 'בטח, אדבר לאט ובקצרה: מיסטר בוט נותן מענה טלפוני חכם לעסקים, כדי שלא תפספס שיחות, לידים ולקוחות.';
+  }
+  if (intentId === 'outbound_who_are_you') {
+    return 'אנחנו מיסטר בוט, שירות של מענה טלפוני חכם לעסקים, שעונה ללקוחות, אוסף לידים ועוזר בתיאומים ושירות.';
+  }
+  if (intentId === 'outbound_how_did_you_get_to_me' || /מאיפה.*הטלפון/u.test(norm)) {
+    return 'אנחנו פונים לעסקים מפרטי קשר עסקיים זמינים, רק כדי לבדוק אם מענה טלפוני חכם יכול להיות רלוונטי גם לעסק שלך.';
+  }
+  if (intentId === 'outbound_what_do_you_offer' || /מה\s+אתם|מה\s+את\s+מציעה|תספרי\s+לי\s+קצת/u.test(norm)) {
+    return 'אנחנו נותנים מענה טלפוני חכם לעסקים: עונים לשיחות, תופסים לידים, קובעים תורים ועוזרים בשירות לקוחות גם כשאתם עסוקים.';
+  }
+  if (intentId === 'outbound_business_context' || /מסעדה|חנות|קליניקה|עסק/u.test(norm)) {
+    if (/מסעדה/u.test(norm)) return 'למסעדה זה יכול להתאים במיוחד: לענות לשיחות, לקחת פרטים, לעזור בהזמנות ולהפחית פספוס של לקוחות בזמן עומס.';
+    if (/חנות/u.test(norm)) return 'לחנות זה יכול להתאים במיוחד: לענות לפניות, לתפוס לידים, ולתת מענה גם כשאתם עם לקוחות במקום.';
+    return 'זה יכול להתאים במיוחד לעסקים שמקבלים שיחות, פניות ולידים ורוצים מענה רציף בלי להעמיס על הצוות.';
+  }
+  if (intentId === 'outbound_interested' || /(רלוונטי|יכול\s+להתאים|נשמע\s+טוב|חיובי|מעניין)/u.test(norm)) {
+    return 'מעולה. בקצרה, מיסטר בוט נותן לעסק מענה טלפוני חכם שנשמע אנושי, כדי לענות ללקוחות, לתפוס לידים ולקבוע תורים בלי לפספס פניות.';
+  }
+  if (/מי\s+את|מי\s+אתם|מה\s+אתם|מה\s+את/u.test(norm)) {
+    return 'אנחנו מיסטר בוט, שירות של מענה טלפוני חכם לעסקים, והמטרה שלי היא לבדוק אם זה יכול לעזור גם לעסק שלך.';
+  }
+  if (/מה\s+זאת\s+אומרת\s+להרבה/u.test(norm)) {
+    return 'אני מתכוונת לעסקים שמפספסים שיחות, לידים או לקוחות כשאין מי שיענה בזמן, במיוחד בשעות עומס.';
+  }
+  if (/אוקיי|או\s*קיי/u.test(norm) && /לא\s*הבנתי/u.test(norm)) {
+    return 'ברור. אסביר פשוט: אנחנו עוזרים לעסק לענות לשיחות, לקחת פרטים ולטפל בלידים גם כשאין זמן לענות לכל פנייה.';
+  }
+  if (/ת\s*ס\s*פרי\s*לי\s*קצת|ספרי\s*לי\s*קצת|ספר\s*לי\s*קצת/u.test(norm)) {
+    return 'בשמחה. מיסטר בוט הוא מענה טלפוני חכם לעסקים, שיכול לענות ללקוחות, לתפוס לידים, לקבוע תורים ולעזור בשירות בצורה שנשמעת אנושית.';
+  }
+  if (/כן/u.test(norm) && compact.length <= 4) {
+    return 'מצוין. אסביר בקצרה: אנחנו נותנים לעסק מענה טלפוני חכם, כדי שלא תפספסו שיחות, לידים או לקוחות.';
+  }
+  return 'אסביר בקצרה: מיסטר בוט נותן לעסק מענה טלפוני חכם, כדי לענות ללקוחות, לתפוס לידים ולקבוע תורים בצורה שנשמעת אנושית.';
+}
+
 function isAffirmativeUtterance(text) {
   const t = safeStr(text);
   if (!t) return false;
@@ -662,6 +736,12 @@ class GeminiLiveSession {
     if (who === "bot" && looksLikeReasoningText(nlp.raw || nlp.normalized)) {
       return;
     }
+    if (who === "bot" && String(this._call.call_type || '').toLowerCase() === 'outbound') {
+      const norm = safeStr(nlp.normalized || nlp.raw);
+      if ((nlp.lang === 'en' && this._langState.lockedLanguage === 'he') || wordCount(norm) < 2) {
+        return;
+      }
+    }
 
     const role = who === "user" ? "user" : "assistant";
 
@@ -684,11 +764,14 @@ class GeminiLiveSession {
 
     if (who === "user") {
       this._applyLanguageDecision(nlp);
-      const meaningfulUserText = String(nlp.normalized || nlp.raw || '').trim();
-      if (!this._greetingSent && this._openingQueuedUntilFirstUserUtterance && meaningfulUserText && meaningfulUserText !== '.' && meaningfulUserText.length >= 1) {
-        this._greetingSent = true;
-        this._openingQueuedUntilFirstUserUtterance = false;
-        this._sendProactiveOpening();
+      if (!this._greetingSent && this._openingQueuedUntilFirstUserUtterance) {
+        if (isMeaningfulFirstUtterance(nlp)) {
+          this._greetingSent = true;
+          this._openingQueuedUntilFirstUserUtterance = false;
+          this._sendProactiveOpening();
+          return;
+        }
+        return;
       }
     }
 
@@ -759,20 +842,6 @@ class GeminiLiveSession {
         callType: this._call.call_type,
       });
 
-      if (String(this._call.call_type || '').toLowerCase() === 'outbound' && this.ws && this.ready && !this.closed) {
-        const steer = [
-          'הלקוח אמר עכשיו: ' + (nlp.normalized || nlp.raw),
-          'עני בעברית בלבד.',
-          'עני במשפט מלא אחד עד שניים, לא יותר.',
-          'אל תחזרי רק על השם, אל תעני במילה אחת, ואל תתרגמי לאנגלית.',
-          'אם הלקוח שאל איך הגעתם אליו, הסבירי בקצרה שמדובר בפנייה יזומה לעסקים שעשויים להרוויח ממענה טלפוני חכם.',
-          'אם הלקוח שאל מה אתם מציעים, הסבירי בקצרה על מענה טלפוני חכם, תפיסת לידים, קביעת תורים ושירות לקוחות.',
-          'אם הלקוח ציין סוג עסק, חברי את ההסבר לסוג העסק שלו.',
-        ].join('\n');
-        try {
-          this.ws.send(JSON.stringify({ clientContent: { turns: [{ role: 'user', parts: [{ text: steer }] }], turnComplete: true } }));
-        } catch {}
-      }
 
       logger.info("INTENT_DETECTED", {
         ...this.meta,
@@ -782,6 +851,10 @@ class GeminiLiveSession {
         language_locked: this._langState.lockedLanguage,
         intent,
       });
+
+      if (this._maybeHandleOutboundUserTurn(nlp, intent)) {
+        return;
+      }
     }
 
     if (who === "bot") {
@@ -831,6 +904,35 @@ class GeminiLiveSession {
         lang: nlp.lang,
       });
     }
+  }
+
+
+  _sendExactBotUtterance(text) {
+    if (!this.ws || this.closed || !this.ready) return;
+    const finalText = safeStr(text);
+    if (!finalText) return;
+    const msg = {
+      clientContent: {
+        turns: [{ role: 'user', parts: [{ text: [
+          'עני עכשיו בדיוק במשפט הבא, בעברית בלבד, בלי להוסיף שום דבר ובלי לתרגם.',
+          'אסור לענות במילה אחת.',
+          finalText,
+        ].join("\n") }] }],
+        turnComplete: true,
+      },
+    };
+    try {
+      this.ws.send(JSON.stringify(msg));
+    } catch {}
+  }
+
+  _maybeHandleOutboundUserTurn(nlp, intent) {
+    if (String(this._call.call_type || '').toLowerCase() !== 'outbound') return false;
+    if (isUnknownOrNoiseUtterance(nlp)) return false;
+    const scripted = buildScriptedOutboundReply(intent, nlp, this.meta);
+    if (!scripted) return false;
+    this._sendExactBotUtterance(scripted);
+    return true;
   }
 
   _sendProactiveOpening() {
