@@ -30,7 +30,9 @@ async function createOutboundCall({ to, lead }) {
   form.set("Url", voiceUrl);
   if (statusCallback) {
     form.set("StatusCallback", statusCallback);
-    form.set("StatusCallbackEvent", "initiated ringing answered completed busy no-answer failed");
+    ["initiated", "ringing", "answered", "completed"].forEach((event) => {
+      form.append("StatusCallbackEvent", event);
+    });
     form.set("StatusCallbackMethod", "POST");
   }
   const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Calls.json`, {

@@ -2,13 +2,14 @@
 
 const express = require("express");
 const { loadSSOT } = require("../ssot/ssotClient");
+const { env } = require("../config/env");
 
 const router = express.Router();
 
 router.post("/admin/reload-sheets", async (req, res) => {
   try {
     const adminToken = String(req.headers["x-admin-token"] || "").trim();
-    const expectedToken = String(process.env.TWILIO_AUTH_TOKEN || "").trim();
+    const expectedToken = String(process.env.OUTBOUND_ADMIN_TOKEN || env.OUTBOUND_ADMIN_TOKEN || process.env.TWILIO_AUTH_TOKEN || "").trim();
     if (!expectedToken || adminToken !== expectedToken) {
       return res.status(401).json({ ok: false, error: "unauthorized" });
     }

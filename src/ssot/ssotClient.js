@@ -89,10 +89,6 @@ function rowsToIntents(rows) {
   })).filter((x) => x.intent_id);
 }
 
-function rowsToObjects(rows) {
-  return (rows || []).map((r) => Object.fromEntries((r || []).map((v, idx) => [idx, v])));
-}
-
 function rowsToNamedObjects(values) {
   if (!Array.isArray(values) || values.length < 2) return [];
   const header = values[0].map((x) => String(x || "").trim());
@@ -179,6 +175,27 @@ function getSSOT() {
   return CACHE;
 }
 
+function getSetting(key, fallback = "") {
+  const settings = CACHE?.settings || {};
+  if (Object.prototype.hasOwnProperty.call(settings, key) && String(settings[key] ?? "").trim() !== "") {
+    return String(settings[key]);
+  }
+  return fallback;
+}
+
+function getSettingBool(key, fallback = false) {
+  const raw = getSetting(key, fallback === undefined || fallback === null ? "" : String(fallback));
+  const normalized = String(raw || "").trim().toLowerCase();
+  if (!normalized) return !!fallback;
+  return ["true", "1", "yes", "y", "on"].includes(normalized);
+}
+
+function getSettingInt(key, fallback = 0) {
+  const raw = getSetting(key, String(fallback));
+  const n = parseInt(String(raw || "").trim(), 10);
+  return Number.isNaN(n) ? fallback : n;
+}
+
 async function appendSheetRow(sheetName, values) {
   const { sheets, sheetId } = await getSheetsClient();
   await sheets.spreadsheets.values.append({
@@ -216,4 +233,12 @@ async function updateLeadRowByLeadId(leadId, patch) {
   return { ok: true, rowIndex: rowIndex + 1 };
 }
 
-module.exports = { loadSSOT, getSSOT, appendSheetRow, updateLeadRowByLeadId };
+module.exports = {
+  loadSSOT,
+  getSSOT,
+  getSetting,
+  getSettingBool,
+  getSettingInt,
+  appendSheetRow,
+  updateLeadRowByLeadId,
+};

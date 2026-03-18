@@ -2,8 +2,8 @@
 
 const express = require("express");
 const { env } = require("../config/env");
-const { getState, setSchedulerEnabled, markDialStarted } = require("../outbound/stateStore");
-const { runOnce } = require("../outbound/outboundEngine");
+const { getState, markDialStarted } = require("../outbound/stateStore");
+const { runOnce, canDialNow } = require("../outbound/outboundEngine");
 const { startScheduler, stopScheduler, tick } = require("../outbound/outboundScheduler");
 const { createOutboundCall } = require("../outbound/twilioDialer");
 const { markLeadDialing } = require("../outbound/leadSource");
@@ -20,8 +20,11 @@ router.use("/admin/outbound", (req, res, next) => {
   next();
 });
 
-router.get("/admin/outbound/status", (req, res) => res.json({ ok: true, state: getState() }));
-router.post("/admin/outbound/start", (req, res) => res.json({ ok: true, state: startScheduler() }));
+router.get("/admin/outbound/status", (req, res) => res.json({ ok: true, state: getState(), gate: canDialNow() }));
+router.post("/admin/outbound/start", (req, res) => {
+  const runImmediately = String(req.body?.run_immediately || "false").toLowerCase() === "true";
+  return res.json({ ok: true, state: startScheduler({ runImmediately, autoStart: false }), gate: canDialNow() });
+});
 router.post("/admin/outbound/stop", (req, res) => res.json({ ok: true, state: stopScheduler() }));
 router.post("/admin/outbound/run-once", async (req, res) => {
   const out = await runOnce();

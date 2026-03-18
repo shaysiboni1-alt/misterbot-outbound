@@ -13,13 +13,13 @@ const { twilioStatusRouter } = require("./routes/twilioStatus");
 const { twilioVoiceRouter } = require("./routes/twilioVoice");
 const { outboundAdminRouter } = require("./routes/outboundAdmin");
 
-const { loadSSOT } = require("./ssot/ssotClient");
+const { loadSSOT, getSettingBool } = require("./ssot/ssotClient");
 const { installTwilioMediaWs } = require("./ws/twilioMediaWs");
 
 const { ensureCallerMemorySchema } = require("./memory/callerMemory");
 const { setRecordingForCall } = require("./utils/recordingRegistry");
 const { proxyRecordingMp3 } = require("./utils/twilioRecordings");
-const { startScheduler } = require("./outbound/outboundScheduler");
+const { startScheduler, shouldAutoStart } = require("./outbound/outboundScheduler");
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -68,7 +68,12 @@ const server = app.listen(env.PORT, "0.0.0.0", async () => {
   logger.info("Service started", { port: env.PORT, provider_mode: env.PROVIDER_MODE, outbound_enabled: env.OUTBOUND_ENABLED });
   try { await loadSSOT(false); } catch (err) { logger.error("SSOT preload failed", { error: err?.message || String(err) }); }
   try { await ensureCallerMemorySchema(); logger.info("Caller memory schema ready"); } catch (err) { logger.warn("Caller memory schema init failed", { error: err?.message || String(err) }); }
-  if (env.OUTBOUND_ENABLED) startScheduler();
+  const ssotAutoStart = getSettingBool("OUTBOUND_AUTO_START", env.OUTBOUND_AUTO_START);
+  if (env.OUTBOUND_ENABLED && shouldAutoStart()) {
+    startScheduler();
+  } else {
+    logger.info("Outbound scheduler not auto-started", { outbound_enabled: env.OUTBOUND_ENABLED, ssot_auto_start: ssotAutoStart });
+  }
 });
 
 installTwilioMediaWs(server);
