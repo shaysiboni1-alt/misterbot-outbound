@@ -304,7 +304,6 @@ function normalizeLead(
       const fallback = detectIntent({
         text: transcript,
         intents: ssot?.intents || [],
-        callType: safeStr(call?.call_type) || undefined,
         opts: { forceLang: safeStr(call?.language_locked) || undefined },
       });
       out.intent = fallback?.intent_id || null;

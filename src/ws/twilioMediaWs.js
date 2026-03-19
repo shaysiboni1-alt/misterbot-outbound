@@ -8,11 +8,8 @@ const { GeminiLiveSession } = require("../vendor/geminiLiveSession");
 const { startCallRecording } = require("../utils/twilioRecordings");
 const { setRecordingForCall } = require("../utils/recordingRegistry");
 const { getSSOT } = require("../ssot/ssotClient");
+
 const { getCallerProfile } = require("../memory/callerMemory");
-const {
-  waitForPrewarmReady,
-  markPrewarmAttached,
-} = require("../outbound/prewarmStore");
 
 function installTwilioMediaWs(server) {
   const wss = new WebSocket.Server({ noServer: true });
@@ -29,51 +26,22 @@ function installTwilioMediaWs(server) {
     let callSid = null;
     let customParameters = {};
     let gemini = null;
-    let stopped = false;
-    let openingLock = false;
-    let openingMarkName = "";
-    let openingLockTimer = null;
-    const pendingInboundFrames = [];
 
-    function sendJson(obj) {
-      try {
-        twilioWs.send(JSON.stringify(obj));
-      } catch {}
-    }
+    let stopped = false;
 
     function sendToTwilioMedia(ulaw8kB64) {
-      if (!streamSid || !ulaw8kB64) return;
-      sendJson({
+      if (!streamSid) return;
+      const payload = {
         event: "media",
         streamSid,
         media: { payload: ulaw8kB64 },
-      });
+      };
+      try {
+        twilioWs.send(JSON.stringify(payload));
+      } catch {}
     }
 
-    function sendTwilioMark(name) {
-      if (!streamSid || !name) return;
-      sendJson({
-        event: "mark",
-        streamSid,
-        mark: { name },
-      });
-    }
-
-    function unlockOpeningAndFlush() {
-      if (!openingLock) return;
-      openingLock = false;
-
-      if (openingLockTimer) {
-        clearTimeout(openingLockTimer);
-        openingLockTimer = null;
-      }
-
-      while (pendingInboundFrames.length && gemini) {
-        const b64 = pendingInboundFrames.shift();
-        gemini.sendUlaw8kFromTwilio(b64);
-      }
-    }
-
+    // NOTE: must be async because we may await caller-memory lookups (Postgres).
     twilioWs.on("message", async (data) => {
       let msg;
       try {
@@ -90,6 +58,8 @@ function installTwilioMediaWs(server) {
         customParameters = msg?.start?.customParameters || {};
         logger.info("Twilio stream start", { streamSid, callSid, customParameters });
 
+        // Start Twilio call recording early so a RecordingSid exists by the time we finalize.
+        // Canonical spec: if Twilio returns a sid, store it immediately in Registry by CallSid.
         if (env.MB_ENABLE_RECORDING && callSid) {
           startCallRecording(callSid, logger)
             .then((r) => {
@@ -112,13 +82,7 @@ function installTwilioMediaWs(server) {
             });
         }
 
-        const ssot = getSSOT();
-        const prewarmKey = String(customParameters?.prewarm_key || "").trim();
-        let prewarm = null;
-
-        if (prewarmKey) {
-          prewarm = await waitForPrewarmReady(prewarmKey, 1800, 25);
-        }
+        const ssot = getSSOT(); // already loaded; if empty do not break voice
 
         const meta = {
           streamSid,
@@ -126,20 +90,20 @@ function installTwilioMediaWs(server) {
           caller: customParameters?.caller,
           called: customParameters?.called,
           source: customParameters?.source,
-          call_type: customParameters?.call_type || "inbound",
-          lead_id: customParameters?.lead_id || "",
-          campaign_id: customParameters?.campaign_id || "",
-          contact_name: customParameters?.contact_name || "",
-          business_name: customParameters?.business_name || "",
-          prewarm_key: prewarmKey,
-          spoken_opening: prewarm?.ready ? String(prewarm?.openingText || "") : "",
-          skip_proactive_opening: !!prewarm?.ready,
+          call_type: customParameters?.call_type || 'inbound',
+          lead_id: customParameters?.lead_id || '',
+          campaign_id: customParameters?.campaign_id || '',
+          contact_name: customParameters?.contact_name || '',
+          business_name: customParameters?.business_name || '',
         };
 
+        // Best-effort caller recognition. No impact on lead parsing.
         try {
           const prof = await getCallerProfile(meta.caller);
           if (prof) meta.caller_profile = prof;
-        } catch {}
+        } catch (e) {
+          // swallow
+        }
 
         gemini = new GeminiLiveSession({
           meta,
@@ -150,61 +114,19 @@ function installTwilioMediaWs(server) {
             logger.info(`TRANSCRIPT ${who}`, { streamSid, callSid, text });
           },
         });
+
         gemini.start();
-
-        if (prewarm?.ready && Array.isArray(prewarm.openingAudioChunks) && prewarm.openingAudioChunks.length) {
-          openingLock = true;
-          openingMarkName = `opening-${streamSid}`;
-
-          for (const chunk of prewarm.openingAudioChunks) {
-            sendToTwilioMedia(chunk);
-          }
-
-          sendTwilioMark(openingMarkName);
-          markPrewarmAttached(prewarmKey);
-
-          logger.info("Prewarmed opening flushed", {
-            streamSid,
-            callSid,
-            prewarm_key: prewarmKey,
-            chunks: prewarm.openingAudioChunks.length,
-          });
-
-          openingLockTimer = setTimeout(() => unlockOpeningAndFlush(), 4000);
-        }
-
         return;
       }
 
       if (ev === "media") {
         const b64 = msg?.media?.payload;
-        if (!b64 || !gemini) return;
-
-        if (openingLock) {
-          pendingInboundFrames.push(b64);
-          return;
-        }
-
-        gemini.sendUlaw8kFromTwilio(b64);
-        return;
-      }
-
-      if (ev === "mark") {
-        if (msg?.mark?.name && msg.mark.name === openingMarkName) {
-          logger.info("Twilio opening mark received", {
-            streamSid,
-            callSid,
-            mark: openingMarkName,
-          });
-          unlockOpeningAndFlush();
-        }
+        if (b64 && gemini) gemini.sendUlaw8kFromTwilio(b64);
         return;
       }
 
       if (ev === "stop") {
         logger.info("Twilio stream stop", { streamSid, callSid });
-        unlockOpeningAndFlush();
-
         if (!stopped && gemini) {
           stopped = true;
           gemini.endInput();
@@ -220,8 +142,6 @@ function installTwilioMediaWs(server) {
 
     twilioWs.on("close", () => {
       logger.info("Twilio media WS closed", { streamSid, callSid });
-      unlockOpeningAndFlush();
-
       if (!stopped && gemini) {
         stopped = true;
         gemini.stop();
@@ -230,8 +150,6 @@ function installTwilioMediaWs(server) {
 
     twilioWs.on("error", (err) => {
       logger.error("Twilio media WS error", { streamSid, callSid, error: err.message });
-      unlockOpeningAndFlush();
-
       if (!stopped && gemini) {
         stopped = true;
         gemini.stop();

@@ -50,12 +50,12 @@ function getOpeningScriptFromSSOT(ssot, vars) {
 
   let tpl = "";
   if (callType === "outbound") {
-    tpl = (isReturning && (safeStr(settings.OUTBOUND_OPENING_SCRIPT_RETURNING) || safeStr(settings.OUTBOUND_OPENING_TEMPLATE_RETURNING))) || safeStr(settings.OUTBOUND_OPENING_SCRIPT) || safeStr(settings.OUTBOUND_OPENING_TEMPLATE);
+    tpl = (isReturning && safeStr(settings.OUTBOUND_OPENING_SCRIPT_RETURNING)) || safeStr(settings.OUTBOUND_OPENING_SCRIPT);
     if (!tpl) {
-      tpl = "{GREETING}, מדבר/ת ממיסטר בוט. רציתי לבדוק אם מענה טלפוני חכם לעסק יכול להיות רלוונטי אצלכם.";
+      tpl = "{GREETING}, מדבר/ת ממיסטר בוט. אפשר רגע לדבר עם {CALLER_NAME} לגבי מענה טלפוני חכם לעסק?";
     }
   } else {
-    tpl = (isReturning && (safeStr(settings.OPENING_SCRIPT_RETURNING) || safeStr(settings.INBOUND_OPENING_TEMPLATE_RETURNING))) || safeStr(settings.OPENING_SCRIPT) || safeStr(settings.INBOUND_OPENING_TEMPLATE) || "שלום! איך נוכל לעזור?";
+    tpl = (isReturning && safeStr(settings.OPENING_SCRIPT_RETURNING)) || safeStr(settings.OPENING_SCRIPT) || "שלום! איך נוכל לעזור?";
   }
 
   const merged = {

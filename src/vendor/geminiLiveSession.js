@@ -120,8 +120,8 @@ function buildIntentsContext(intents) {
 function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
   const settings = ssot?.settings || {};
   const prompts = ssot?.prompts || {};
-  const allIntents = Array.isArray(ssot?.intents) ? ssot.intents : [];
-  const callType = safeStr(runtimeMeta?.call_type || "inbound").toLowerCase();
+  const intents = ssot?.intents || [];
+
   const defaultLang =
     safeStr(runtimeMeta?.language_locked) ||
     safeStr(settings.DEFAULT_LANGUAGE) ||
@@ -129,145 +129,82 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
   const callerName =
     safeStr(runtimeMeta?.caller_name) ||
     safeStr(runtimeMeta?.display_name) ||
-    safeStr(runtimeMeta?.contact_name) ||
     "";
   const callerWithheld = !!runtimeMeta?.caller_withheld;
-  const relevantIntents =
-    callType === "outbound"
-      ? allIntents.filter(
-          (it) =>
-            /^outbound_/i.test(String(it?.intent_id || "")) ||
-            /^(sales|outbound|qualification|objection|callback|lead)$/i.test(
-              String(it?.intent_type || "")
-            )
-        )
-      : allIntents.filter((it) => !/^outbound_/i.test(String(it?.intent_id || "")));
 
   const sections = [];
 
-  sections.push(
-    [
-      "IDENTITY (NON-NEGOTIABLE):",
-      "- You are the customer-facing phone representative of Mr.Bot.",
-      "- Never say you are AI, model, system, assistant model, or LLM.",
-      "- Speak naturally in Hebrew, in short spoken sentences.",
-      "- Never output markdown, bullets, JSON, notes, or internal reasoning.",
-      "- Every spoken response must be a complete customer-facing sentence.",
-      "- Never answer with only the caller name. If you use the caller name, continue with a full sentence in the same turn.",
-    ].join("\n")
-  );
+  sections.push([
+    "IDENTITY (NON-NEGOTIABLE):",
+    "- You are the business phone assistant defined by SETTINGS and PROMPTS.",
+    "- Never identify as an AI, model, assistant model, or LLM.",
+    "- Speak briefly, naturally, and only as a customer-facing phone representative.",
+    "- NEVER output analysis, internal planning, reasoning, markdown, bullets, JSON, stage labels, or notes.",
+    "- NEVER say things like 'I understand', 'I will', 'I'm now', 'I've processed', 'composing', 'confirming', or any meta explanation.",
+    "- Output ONLY the final customer-facing sentence(s) to be spoken aloud.",
+    "- If you are about to say anything meta, stop and instead say the customer-facing sentence only.",
+  ].join("\n"));
 
-  sections.push(
-    [
-      "LANGUAGE POLICY:",
-      `- locked_language=${defaultLang}`,
-      "- Start and stay in Hebrew unless the caller explicitly asks to switch.",
-      "- Do not switch language because of accent or a foreign-sounding name.",
-    ].join("\n")
-  );
+  sections.push([
+    "LANGUAGE POLICY (HARD RULE):",
+    `- locked_language=${defaultLang}`,
+    "- Start and stay in Hebrew by default.",
+    "- Do NOT switch language because of accent, pronunciation, or a foreign-sounding name.",
+    "- Switch language only if the caller explicitly asks to switch, or clearly speaks in a supported language for multiple turns.",
+    "- If in doubt, remain in Hebrew.",
+  ].join("\n"));
 
-  if (callType === "outbound") {
-    sections.push(
-      [
-        "OUTBOUND CALL MODE (HARD RULES):",
-        "- This is an outbound call initiated by Mr.Bot to check relevance for a business phone-answering solution.",
-        "- Main value: human-sounding phone answering, virtual receptionist, lead capture, appointment booking, customer service, and sales assistance.",
-        "- Do NOT ask 'איך אפשר לעזור' or behave like inbound customer support.",
-        "- Your goal is to confirm relevance, understand the business need, explain the service briefly, and move to a sales follow-up if there is interest.",
-        "- When the caller asks what the service does, answer concretely in 1-2 short sentences with examples.",
-        "- If the caller shares pain like missed calls, lead loss, overload, booking, or customer-service pressure, acknowledge it briefly and explain how Mr.Bot helps.",
-        "- Ask only one focused follow-up question at a time.",
-        "- If the caller is interested, propose a callback from a sales manager or continuation with more details.",
-        "- If the caller asks about price, answer briefly that pricing depends on volume/use case and offer to connect for an exact quote.",
-        "- Never stall, never repeat only the name, and never give one-word answers.",
-        "- Never answer in English during a Hebrew outbound call.",
-        "- Never say filler like 'רגע, אה'.",
-        "- If the caller says they did not understand, answer slowly in one short sentence.",
-      ].join("\n")
-    );
-  } else {
-    sections.push(
-      [
-        "INBOUND CALL MODE (HARD RULES):",
-        "- Handle inbound calls briefly and naturally.",
-        "- Ask only one question at a time.",
-        "- If the call is informational, answer briefly and do not force lead capture.",
-        "- Do not use outbound sales framing in inbound calls.",
-      ].join("\n")
-    );
-  }
+  sections.push([
+    "DIALOG POLICY (HARD RULE):",
+    "- Ask only ONE question at a time.",
+    "- Never bundle multiple data-collection questions into one turn.",
+    "- Prefer short, focused follow-up questions.",
+    "- If the caller corrects you, apologize briefly, correct course, and continue naturally.",
+    "- If the caller says something like 'אני אישה' or 'אני בת', do NOT treat it as a name.",
+    "- If the caller corrects gender/name confusion, acknowledge briefly and then ask for the name again only if needed for the request.",
+    "- If the call is only for information, answer briefly and do not force lead capture.",
+    "- If the caller confirms callback to the identified number, immediately acknowledge, close politely, and end the flow.",
+  ].join("\n"));
 
   if (callerName) {
-    sections.push(
-      [
-        "CALLER MEMORY POLICY:",
-        `- Known caller name: "${callerName}"`,
-        "- Treat it as correct unless the caller explicitly corrects it.",
-        "- Do not ask for the name again unless needed.",
-      ].join("\n")
-    );
+    sections.push([
+      "CALLER MEMORY POLICY:",
+      `- Known caller name: "${callerName}"`,
+      "- Treat it as correct unless the caller explicitly corrects it.",
+      "- Do not ask for the caller name again if it is already known.",
+    ].join("\n"));
   }
 
   if (callerWithheld) {
-    sections.push(
-      [
-        "WITHHELD NUMBER POLICY:",
-        "- The caller number is withheld/private.",
-        "- If callback is needed, collect a callback number explicitly.",
-      ].join("\n")
-    );
+    sections.push([
+      "WITHHELD NUMBER POLICY:",
+      "- The caller number is withheld/private.",
+      "- If the caller leaves a request or asks for a callback, you MUST collect a callback number explicitly.",
+      "- Do not say you will return to the identified number because there is no usable caller ID.",
+    ].join("\n"));
   }
 
-  const promptKeys =
-    callType === "outbound"
-      ? [
-          "OUTBOUND_MASTER_PROMPT",
-          "OUTBOUND_GUARDRAILS_PROMPT",
-          "QUALIFICATION_PROMPT",
-          "OBJECTION_HANDLING_PROMPT",
-          "CALLBACK_CAPTURE_PROMPT",
-          "OUTBOUND_LEAD_PARSER_PROMPT",
-          "SCRIPT_PROFILE_PROMPT",
-        ]
-      : [
-          "MASTER_PROMPT",
-          "GUARDRAILS_PROMPT",
-          "KB_PROMPT",
-          "LEAD_CAPTURE_PROMPT",
-          "INTENT_ROUTER_PROMPT",
-        ];
-
-  for (const key of promptKeys) {
-    if (prompts[key]) sections.push(`${key}:\n${safeStr(prompts[key])}`);
+  if (prompts.MASTER_PROMPT) {
+    sections.push(`MASTER_PROMPT:\n${safeStr(prompts.MASTER_PROMPT)}`);
   }
-
-  if (
-    callType === "outbound" &&
-    Array.isArray(ssot?.outbound_script) &&
-    ssot.outbound_script.length
-  ) {
-    const scriptLines = ssot.outbound_script
-      .slice(0, 12)
-      .map((row) => {
-        const step = safeStr(row.step || row.Step || row.stage || row.name);
-        const desc = safeStr(
-          row.description || row.Description || row.value || row.text
-        );
-        const ex = safeStr(row.example_text || row.example || row.sample);
-        return `- ${step || "step"}: ${desc}${ex ? ` | example: ${ex}` : ""}`.trim();
-      })
-      .filter(Boolean)
-      .join("\n");
-    if (scriptLines) sections.push(`OUTBOUND_SCRIPT:\n${scriptLines}`);
+  if (prompts.GUARDRAILS_PROMPT) {
+    sections.push(`GUARDRAILS_PROMPT:\n${safeStr(prompts.GUARDRAILS_PROMPT)}`);
+  }
+  if (prompts.KB_PROMPT) {
+    sections.push(`KB_PROMPT:\n${safeStr(prompts.KB_PROMPT)}`);
+  }
+  if (prompts.LEAD_CAPTURE_PROMPT) {
+    sections.push(`LEAD_CAPTURE_PROMPT:\n${safeStr(prompts.LEAD_CAPTURE_PROMPT)}`);
+  }
+  if (prompts.INTENT_ROUTER_PROMPT) {
+    sections.push(`INTENT_ROUTER_PROMPT:\n${safeStr(prompts.INTENT_ROUTER_PROMPT)}`);
   }
 
   const settingsContext = buildSettingsContext(settings);
   if (settingsContext) sections.push(`SETTINGS_CONTEXT:\n${settingsContext}`);
 
-  const intentsContext = buildIntentsContext(
-    relevantIntents.length ? relevantIntents : allIntents
-  );
-  if (intentsContext) sections.push(`RELEVANT_INTENTS:\n${intentsContext}`);
+  const intentsContext = buildIntentsContext(intents);
+  if (intentsContext) sections.push(`INTENTS_TABLE:\n${intentsContext}`);
 
   return sections.filter(Boolean).join("\n\n---\n\n").trim();
 }
@@ -292,226 +229,6 @@ function scrubReasoningText(text) {
   return "";
 }
 
-function wordCount(text) {
-  return safeStr(text).split(/\s+/).filter(Boolean).length;
-}
-
-function compactText(text) {
-  return safeStr(text).replace(/[^\p{L}\p{N}]+/gu, "");
-}
-
-function isUnknownOrNoiseUtterance(nlp) {
-  const raw = safeStr(nlp?.raw || nlp?.normalized);
-  const norm = safeStr(nlp?.normalized || nlp?.raw);
-  const compact = compactText(norm);
-  if (!compact) return true;
-  if (/<noise>|^\.+$/iu.test(raw) || /^\.+$/u.test(norm)) return true;
-  if (nlp?.lang === "unknown" && compact.length <= 6) return true;
-  if (/^[\u0600-\u06FF]+$/u.test(compact)) return true;
-  return false;
-}
-
-function compactHeb(text) {
-  return safeStr(text).replace(/\s+/g, "").trim();
-}
-
-function isGreetingLikeUtterance(nlp) {
-  const norm = safeStr(nlp?.normalized || nlp?.raw);
-  const compact = compactHeb(norm).toLowerCase();
-  if (!norm) return false;
-  if (/^(שלום|הלו|היי|כן|מי זה|מה זה)$/u.test(norm)) return true;
-  if (/^(hello|helo|hi|hey|alo|halo|hallo|yes)$/iu.test(norm)) return true;
-  if (/^(الو|ألو)$/u.test(compact)) return true;
-  return /^(שלום|הלו|היי|hello|helo|hi|hey|alo|halo|hallo|الو|ألو)$/iu.test(compact);
-}
-
-function isMeaningfulFirstUtterance(nlp) {
-  const norm = safeStr(nlp?.normalized || nlp?.raw);
-  const compact = compactText(norm);
-  if (isUnknownOrNoiseUtterance(nlp)) return isGreetingLikeUtterance(nlp);
-  if (isGreetingLikeUtterance(nlp)) return true;
-  if (nlp?.lang === "he" && wordCount(norm) >= 1) return true;
-  if (compact.length >= 6) return true;
-  return false;
-}
-
-function isIncompleteOutboundUserUtterance(nlp) {
-  const norm = safeStr(nlp?.normalized || nlp?.raw);
-  const compact = compactHeb(norm);
-  const words = wordCount(norm);
-  if (!norm) return true;
-  if (isUnknownOrNoiseUtterance(nlp) && !isGreetingLikeUtterance(nlp)) return true;
-  if (isGreetingLikeUtterance(nlp)) return false;
-  if (words <= 1 && compact.length <= 8) return true;
-  if (
-    /^(אני|אבל|רגע|שנייה|מה|כן|לא|אה|או\s*קיי|אוקיי|אוקי|תסבירי|תסביר|מי|מאיפה|אז|זה|את|אתם)$/u.test(
-      norm
-    )
-  )
-    return true;
-  if (/^(א ני|א בל|ר גע|ש נייה|מ ה|ת סבירי|מ י|מ איפה)/u.test(norm)) return true;
-  if (
-    /(אני לא|אני כן|אבל אבל|אבל אני|תסבירי לי מה|ספרי לי מה|תסבירי לי|ספרי לי|מי את|מי אתם|מאיפה יש|איך הגעת|איך הגעתם|מה אתם|מה את|את יכולה לעזור|יש לי עסק|איזה עסק)/u.test(
-      norm
-    )
-  )
-    return true;
-  if (
-    /^(אנילא|אניכן|תסבירילימה|תסביריליקצת|ספרילימה|ספריליקצת|מיאת|מיאתם|מאיפהיש|איךהגעת|איךהגעתם|מהאתם|מהאת|אתיכולהלעזור|ישליעסק|איזהעסק)/.test(
-      compact
-    )
-  )
-    return true;
-  if (/[,:-]$/.test(norm)) return true;
-  if (!/[.?!]$/.test(norm) && words <= 4 && compact.length < 22) return true;
-  if (/^(או\s*קיי|אוקיי|אוקי|הבנתי|בסדר)\.?$/u.test(norm)) return true;
-  return false;
-}
-
-function shouldIgnoreOutboundUserUtterance(nlp) {
-  const norm = safeStr(nlp?.normalized || nlp?.raw);
-  const compact = compactHeb(norm);
-  if (!norm) return true;
-  if (isGreetingLikeUtterance(nlp)) return false;
-  if (isUnknownOrNoiseUtterance(nlp)) return true;
-  if ((nlp?.lang === "unknown" || nlp?.lang === "en") && compact.length <= 10) return true;
-  if (/^\.?$/.test(norm)) return true;
-  return false;
-}
-
-function isBadBotFragment(text) {
-  const norm = safeStr(text);
-  if (!norm) return true;
-  const compact = compactHeb(norm);
-  if (wordCount(norm) <= 1) return true;
-  if (
-    /^(שי|shay|רגע,?\s*אה|אה\.?|הממ+|what.*|human-like|okay\.?|ok\.?|להרבה|maybe|alo|hello|hi|hallo)$/iu.test(
-      norm
-    )
-  )
-    return true;
-  if (/^[A-Za-z ,.'"?!-]+$/.test(norm)) return true;
-  if (compact.length < 8) return true;
-  return false;
-}
-
-function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
-  const norm = safeStr(nlp?.normalized || nlp?.raw);
-  const compact = compactHeb(norm);
-  const intentId = String(intent?.intent_id || "other");
-  const settings = ssot?.settings || {};
-  const busyTemplate = safeStr(settings.OUTBOUND_IF_BUSY_TEMPLATE);
-  const notRelevantTemplate = safeStr(settings.OUTBOUND_IF_NOT_RELEVANT_TEMPLATE);
-  const pricingTemplate = safeStr(settings.OUTBOUND_PRICE_TEMPLATE);
-  const contactName =
-    safeStr(meta?.contact_name) || safeStr(meta?.caller_profile?.display_name);
-
-  if (
-    intentId === "outbound_slow_down" ||
-    /(לא\s*הבנתי|לא\s*שמעתי|מהר\s*מדי|דברי\s*לאט|תסבירי\s*יותר\s*לאט|מדברת\s*מהר|תדברי\s*לאט|מפסיקה\s*לדבר|ממשיכה\s*לדבר)/u.test(
-      norm
-    ) ||
-    /לאהבנתי|מהרמדי|דברילאט|מדברתלימהר|מפסיקהלדבר|ממשיכהלדבר/.test(compact)
-  ) {
-    return "בטח, אסביר לאט: אנחנו נותנים מענה טלפוני חכם שעונה לשיחות ולוקח פרטים.";
-  }
-
-  if (
-    intentId === "outbound_who_are_you" ||
-    /(את יודעת מי אני|מי אני|מי\s*אתם|מי\s*את|מה\s*אתם|מה\s*את)/u.test(norm) ||
-    /אתיודעתמיאני|מיאני|מיאתם|מיאת|מהאתם|מהאת/.test(compact)
-  ) {
-    if (contactName) {
-      return `${contactName}, כן, אני רואה שאני מדבר עם שי, ואני ממיסטר בוט. רציתי לבדוק אם מענה טלפוני חכם יכול להיות רלוונטי לעסק שלך.`;
-    }
-    return "אני ממיסטר בוט, ורציתי לבדוק אם מענה טלפוני חכם יכול להיות רלוונטי לעסק שלך.";
-  }
-
-  if (
-    intentId === "outbound_how_did_you_get_to_me" ||
-    /(איך\s*הגעת|איך\s*הגעתם|מאיפה\s*יש\s*לך\s*את\s*הטלפון|מאיפה\s*יש\s*לכם\s*את\s*המספר)/u.test(
-      norm
-    ) ||
-    /איךהגעתאליי|איךהגעתםאליי|מאיפהישלךאתהטלפוןשלי|מאיפהישלכםאתהמספרשלי/.test(
-      compact
-    )
-  ) {
-    return "המספר הגיע מפרטי קשר עסקיים זמינים, והמטרה היא רק לבדוק אם השירות שלנו רלוונטי לעסק שלך.";
-  }
-
-  if (
-    intentId === "packages_info" ||
-    intentId === "outbound_price" ||
-    /(כמה\s*זה\s*עולה|עלות|מחיר|כמה\s*עולה|מה\s*המחיר)/u.test(norm) ||
-    /כמהזהעולה|כמהעולה|מההמחיר|עלות|מחיר/.test(compact)
-  ) {
-    return (
-      pricingTemplate ||
-      "המחיר תלוי בהיקף השיחות ובמה שצריך שהמערכת תעשה, ובדרך כלל נותנים הצעת מחיר לפי הצורך של העסק."
-    );
-  }
-
-  if (
-    intentId === "outbound_what_do_you_offer" ||
-    /(מה\s*אתם\s*מציעים|מה\s*את\s*מציעה|מה\s*אתם\s*יכולים|תסבירי\s*לי|ספרי\s*לי|תספרי\s*לי)/u.test(
-      norm
-    ) ||
-    /מהאתםמציעים|מהאתמציעה|מהאתםיכולים|תסבירילימה|ספריליקצת|תספריליקצת/.test(
-      compact
-    )
-  ) {
-    return "אנחנו נותנים מענה טלפוני חכם לעסקים, כדי לענות לשיחות, לקחת פרטים ולעזור בתיאומים ולידים.";
-  }
-
-  if (
-    intentId === "outbound_business_context" ||
-    /(לעסק\s*שלי|מסעדה|חנות|קליניקה|מרפאה|מרפאת\s*שיניים|משרד|עסק)/u.test(norm) ||
-    /לעסקשלי|מרפאתשיניים|חנותפרחים/.test(compact)
-  ) {
-    if (/מרפאת\s*שיניים|רופא\s*שיניים/u.test(norm) || /מרפאתשיניים/.test(compact)) {
-      return "למרפאת שיניים זה יכול להתאים מאוד בקביעת תורים, מענה לשיחות והורדת עומס מהקבלה.";
-    }
-    if (/מסעדה/u.test(norm)) {
-      return "למסעדה זה יכול להתאים מאוד במענה לשיחות, הזמנות ופניות בזמן עומס.";
-    }
-    if (/חנות/u.test(norm)) {
-      return "לחנות זה יכול להתאים מאוד במענה לפניות, תפיסת לידים ושירות גם בזמן עומס.";
-    }
-    return "כן, זה מתאים לעסקים שמקבלים שיחות ופניות ורוצים מענה רציף בלי להעמיס על הצוות.";
-  }
-
-  if (
-    intentId === "outbound_interested" ||
-    /(רלוונטי|יכול\s*להתאים|נשמע\s*טוב|חיובי|מעניין)/u.test(norm) ||
-    /רלוונטי|יכוללהתאים|נשמעטוב/.test(compact)
-  ) {
-    return "מעולה, זה יכול לעזור לך לענות לשיחות, לקחת פרטים ולא לפספס פניות.";
-  }
-
-  if (intentId === "outbound_callback_later") {
-    return busyTemplate || "בשמחה, מתי נוח יותר שנחזור אליך בקצרה?";
-  }
-
-  if (intentId === "outbound_not_interested") {
-    return notRelevantTemplate || "מובן, תודה רבה. אם זה יהיה רלוונטי בעתיד, נשמח לעזור.";
-  }
-
-  if (intentId === "outbound_already_has_solution") {
-    return "מעולה, ואם תרצו בעתיד חלופה למענה הטלפוני נשמח לעזור.";
-  }
-
-  if (
-    /(את יכולה לדבר|את יכולה לעזור|מה זה|מה זה אומר|מה את יכולה לעזור|מה את יכולה לעשות)/u.test(
-      norm
-    ) ||
-    /אתיכולהלדבר|אתיכולהלעזור|מהזה|מהאתיכולהלעזור/.test(compact)
-  ) {
-    return "כן, אני יכולה לעזור עם מענה לשיחות, לקיחת פרטים, תיאומים ולידים.";
-  }
-
-  return "אנחנו נותנים מענה טלפוני חכם לעסקים, כדי לענות לשיחות ולקחת פרטים בצורה מסודרת.";
-}
-
 function isAffirmativeUtterance(text) {
   const t = safeStr(text);
   if (!t) return false;
@@ -534,33 +251,6 @@ async function deliverWebhook(url, payload, label) {
   }
 }
 
-function normHold(existing, extra) {
-  const a = safeStr(existing);
-  const b = safeStr(extra);
-  if (!a) return b;
-  if (!b) return a;
-  if (a.endsWith(b)) return a;
-  return `${a} ${b}`.replace(/\s{2,}/g, " ").trim();
-}
-
-function normalizeForDup(text) {
-  return safeStr(text)
-    .replace(/\s+/g, " ")
-    .replace(/[.,!?;:'"()\-]+/g, "")
-    .trim()
-    .toLowerCase();
-}
-
-function looksLikeSpokenOpeningEcho(userText, spokenOpening) {
-  const a = normalizeForDup(userText);
-  const b = normalizeForDup(spokenOpening);
-  if (!a || !b) return false;
-  if (a === b) return true;
-  if (a.length >= 8 && b.includes(a)) return true;
-  if (b.length >= 8 && a.includes(b)) return true;
-  return false;
-}
-
 class GeminiLiveSession {
   constructor({ onGeminiAudioUlaw8kBase64, onGeminiText, onTranscript, meta, ssot }) {
     this.onGeminiAudioUlaw8kBase64 = onGeminiAudioUlaw8kBase64;
@@ -572,21 +262,10 @@ class GeminiLiveSession {
     this.ws = null;
     this.ready = false;
     this.closed = false;
-    this._skipProactiveOpening = Boolean(this.meta?.skip_proactive_opening);
-    this._greetingSent = this._skipProactiveOpening;
-    this._openingQueuedUntilFirstUserUtterance = false;
-    this._openingTimer = null;
-    this._lastScriptedReplyAt = 0;
+    this._greetingSent = false;
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
     this._closingSentAfterCallback = false;
-    this._hasMeaningfulUserTurn = false;
-    this._lastAcceptedUserNorm = "";
-    this._lastAcceptedUserAt = 0;
-    this._turnSequence = 0;
-    this._lastHandledUserTurn = 0;
-    this._lastUserIntentId = "";
-    this._lastUserNormalized = "";
 
     this._langState = {
       lockedLanguage: safeStr(env.MB_DEFAULT_LANGUAGE) || "he",
@@ -599,21 +278,8 @@ class GeminiLiveSession {
     };
 
     this._trBuf = {
-      user: {
-        text: "",
-        timer: null,
-        lastChunk: "",
-        lastTs: 0,
-        holdKey: "",
-        holdRepeats: 0,
-        holdStartedAt: 0,
-      },
-      bot: {
-        text: "",
-        timer: null,
-        lastChunk: "",
-        lastTs: 0,
-      },
+      user: { text: "", timer: null, lastChunk: "", lastTs: 0 },
+      bot: { text: "", timer: null, lastChunk: "", lastTs: 0 },
     };
 
     const callerInfo = normalizeCallerId(this.meta?.caller || "");
@@ -622,7 +288,7 @@ class GeminiLiveSession {
       callSid: safeStr(this.meta?.callSid),
       streamSid: safeStr(this.meta?.streamSid),
       source: safeStr(this.meta?.source) || "Mr.Bot",
-      call_type: safeStr(this.meta?.call_type) || "inbound",
+      call_type: safeStr(this.meta?.call_type) || 'inbound',
       lead_id: safeStr(this.meta?.lead_id),
       campaign_id: safeStr(this.meta?.campaign_id),
       contact_name: safeStr(this.meta?.contact_name),
@@ -635,15 +301,12 @@ class GeminiLiveSession {
       conversationLog: [],
       recording_sid: "",
       finalized: false,
+      call_type: safeStr(this.meta?.call_type) || 'inbound',
+      lead_id: safeStr(this.meta?.lead_id),
+      campaign_id: safeStr(this.meta?.campaign_id),
+      contact_name: safeStr(this.meta?.contact_name),
+      business_name: safeStr(this.meta?.business_name),
     };
-
-    if (safeStr(this.meta?.spoken_opening)) {
-      this._call.conversationLog.push({
-        role: "assistant",
-        text: safeStr(this.meta.spoken_opening),
-        ts: nowIso(),
-      });
-    }
 
     this._passiveCtx = null;
     try {
@@ -658,98 +321,6 @@ class GeminiLiveSession {
         });
       }
     } catch {}
-  }
-
-  _isOutbound() {
-    return String(this._call.call_type || "").toLowerCase() === "outbound";
-  }
-
-  _isInbound() {
-    return !this._isOutbound();
-  }
-
-  _clearAllTimers() {
-    if (this._trBuf.user.timer) {
-      clearTimeout(this._trBuf.user.timer);
-      this._trBuf.user.timer = null;
-    }
-    if (this._trBuf.bot.timer) {
-      clearTimeout(this._trBuf.bot.timer);
-      this._trBuf.bot.timer = null;
-    }
-    if (this._openingTimer) {
-      clearTimeout(this._openingTimer);
-      this._openingTimer = null;
-    }
-  }
-
-  _resetUserHold() {
-    this._trBuf.user.holdKey = "";
-    this._trBuf.user.holdRepeats = 0;
-    this._trBuf.user.holdStartedAt = 0;
-  }
-
-  _registerIncompleteUser(nlp) {
-    const holder = this._trBuf.user;
-    const key = normalizeForDup(nlp.normalized || nlp.raw);
-    const now = Date.now();
-
-    if (!holder.holdKey || holder.holdKey !== key) {
-      holder.holdKey = key;
-      holder.holdRepeats = 1;
-      holder.holdStartedAt = now;
-      return false;
-    }
-
-    holder.holdRepeats += 1;
-
-    const maxRepeats = Math.max(3, Number(env.MB_USER_HOLD_MAX_REPEATS || 3));
-    const maxAgeMs = Math.max(1800, Number(env.MB_USER_HOLD_MAX_MS || 2200));
-    const ageMs = now - (holder.holdStartedAt || now);
-
-    if (holder.holdRepeats >= maxRepeats || ageMs >= maxAgeMs) {
-      logger.info("Forcing flush for incomplete user utterance", {
-        ...this.meta,
-        text: nlp.raw,
-        normalized: nlp.normalized,
-        repeats: holder.holdRepeats,
-        age_ms: ageMs,
-      });
-      this._resetUserHold();
-      return true;
-    }
-
-    return false;
-  }
-
-  _scheduleOpeningIfNeeded() {
-    if (this.closed || !this.ready) return;
-    if (this._greetingSent || this._skipProactiveOpening) return;
-
-    const hasPrewarmKey = !!safeStr(this.meta?.prewarm_key);
-
-    let delayMs = 0;
-    if (this._isOutbound() && hasPrewarmKey) {
-      delayMs = Math.max(600, Number(env.MB_PREWARM_OPENING_GRACE_MS || 1200));
-    } else {
-      delayMs = 0;
-    }
-
-    if (this._openingTimer) clearTimeout(this._openingTimer);
-
-    this._openingTimer = setTimeout(() => {
-      this._openingTimer = null;
-      if (this.closed || !this.ready || this._greetingSent || this._skipProactiveOpening) return;
-      this._greetingSent = true;
-      this._sendProactiveOpening();
-    }, delayMs);
-
-    logger.info("Opening dispatch scheduled", {
-      ...this.meta,
-      call_type: this._call.call_type,
-      delay_ms: delayMs,
-      has_prewarm_key: hasPrewarmKey,
-    });
   }
 
   start() {
@@ -784,21 +355,14 @@ class GeminiLiveSession {
         display_name: callerName,
         language_locked: this._langState.lockedLanguage,
         caller_withheld: this._call.caller_withheld,
-        call_type: safeStr(this.meta?.call_type) || "inbound",
+        call_type: safeStr(this.meta?.call_type) || 'inbound',
         contact_name: safeStr(this.meta?.contact_name),
         business_name: safeStr(this.meta?.business_name),
         lead_id: safeStr(this.meta?.lead_id),
       });
 
-      const isOutbound = this._isOutbound();
-      const ssotPrefix = Number(this.ssot?.settings?.OUTBOUND_VAD_PREFIX_MS || 0);
-      const ssotSilence = Number(this.ssot?.settings?.OUTBOUND_VAD_SILENCE_MS || 0);
-      const vadPrefix = isOutbound
-        ? clampNum(ssotPrefix || env.MB_VAD_PREFIX_MS || 80, 40, 800, 80)
-        : clampNum(env.MB_VAD_PREFIX_MS ?? 40, 20, 600, 40);
-      const vadSilence = isOutbound
-        ? clampNum(ssotSilence || 650, 300, 1800, 650)
-        : clampNum(env.MB_VAD_SILENCE_MS ?? 120, 80, 1500, 120);
+      const vadPrefix = clampNum(env.MB_VAD_PREFIX_MS ?? 40, 20, 600, 40);
+      const vadSilence = clampNum(env.MB_VAD_SILENCE_MS ?? 120, 80, 1500, 120);
 
       const setup = {
         setup: {
@@ -849,13 +413,9 @@ class GeminiLiveSession {
         return;
       }
 
-      if (
-        !this._skipProactiveOpening &&
-        (msg?.setupComplete || msg?.serverContent) &&
-        !this._greetingSent &&
-        !this._openingQueuedUntilFirstUserUtterance
-      ) {
-        this._scheduleOpeningIfNeeded();
+      if ((msg?.setupComplete || msg?.serverContent) && !this._greetingSent) {
+        this._greetingSent = true;
+        this._sendProactiveOpening();
       }
 
       try {
@@ -906,7 +466,6 @@ class GeminiLiveSession {
       const reason = reasonBuf ? reasonBuf.toString("utf8") : "";
       this.closed = true;
       this.ready = false;
-      this._clearAllTimers();
 
       this._flushTranscript("user");
       this._flushTranscript("bot");
@@ -925,26 +484,13 @@ class GeminiLiveSession {
   }
 
   _scheduleFlush(who) {
-    if (this.closed) return;
     const holder = this._trBuf[who];
     if (holder.timer) clearTimeout(holder.timer);
-
-    const isOutbound = this._isOutbound();
-    const delay =
-      who === "user"
-        ? isOutbound
-          ? Math.max(650, Number(env.MB_USER_UTTERANCE_FLUSH_MS || 650))
-          : Number(env.MB_USER_UTTERANCE_FLUSH_MS || 700)
-        : isOutbound
-          ? 700
-          : Number(env.MB_BOT_UTTERANCE_FLUSH_MS || 900);
-
-    holder.timer = setTimeout(() => this._flushTranscript(who), delay);
+    holder.timer = setTimeout(() => this._flushTranscript(who), who === "user" ? 220 : 260);
   }
 
   _onTranscriptChunk(who, chunk) {
     if (!env.MB_LOG_TRANSCRIPTS) return;
-    if (this.closed) return;
 
     const c = safeStr(chunk);
     if (!c) return;
@@ -973,14 +519,9 @@ class GeminiLiveSession {
     const explicitSwitch = detectExplicitLanguageSwitch(
       nlp.raw || nlp.normalized || ""
     );
-    const outboundMode = this._isOutbound();
 
     if (explicitSwitch) {
       this._langState.lockedLanguage = explicitSwitch;
-      this._langState.candidateLanguage = null;
-      this._langState.candidateHits = 0;
-    } else if (outboundMode) {
-      this._langState.lockedLanguage = "he";
       this._langState.candidateLanguage = null;
       this._langState.candidateHits = 0;
     } else if (
@@ -1062,92 +603,12 @@ class GeminiLiveSession {
     holder.text = "";
     if (!text) return;
 
-    if (this.closed && who === "user") return;
-
     const nlp = normalizeUtterance(text);
-
     if (who === "bot" && looksLikeReasoningText(nlp.raw || nlp.normalized)) {
       return;
     }
 
-    if (who === "bot" && this._isOutbound()) {
-      const norm = safeStr(nlp.normalized || nlp.raw);
-      if (
-        (nlp.lang === "en" && this._langState.lockedLanguage === "he") ||
-        isBadBotFragment(norm)
-      ) {
-        logger.info("Ignoring bad bot fragment", {
-          ...this.meta,
-          text: nlp.raw,
-          normalized: nlp.normalized,
-          lang: nlp.lang,
-        });
-        return;
-      }
-    }
-
     const role = who === "user" ? "user" : "assistant";
-
-    if (who === "user") {
-      if (
-        this._isOutbound() &&
-        safeStr(this.meta?.spoken_opening) &&
-        looksLikeSpokenOpeningEcho(nlp.normalized || nlp.raw, this.meta.spoken_opening)
-      ) {
-        logger.info("Ignoring opening echo as user transcript", {
-          ...this.meta,
-          text: nlp.raw,
-          normalized: nlp.normalized,
-        });
-        return;
-      }
-
-      const dedupNorm = normalizeForDup(nlp.normalized || nlp.raw);
-      if (
-        dedupNorm &&
-        dedupNorm === this._lastAcceptedUserNorm &&
-        Date.now() - this._lastAcceptedUserAt <
-          Math.max(1500, Number(env.MB_DUP_USER_TRANSCRIPT_WINDOW_MS || 2500))
-      ) {
-        logger.info("Ignoring duplicate user transcript", {
-          ...this.meta,
-          text: nlp.raw,
-          normalized: nlp.normalized,
-        });
-        return;
-      }
-
-      this._applyLanguageDecision(nlp);
-
-      if (this._isOutbound()) {
-        const shouldIgnore = shouldIgnoreOutboundUserUtterance(nlp);
-        const isIncomplete = isIncompleteOutboundUserUtterance(nlp);
-
-        if (shouldIgnore) {
-          return;
-        }
-
-        if (isIncomplete) {
-          const forceFlush = this._registerIncompleteUser(nlp);
-          if (!forceFlush) {
-            holder.text = normHold(holder.text, nlp.raw);
-            if (!this.closed) this._scheduleFlush("user");
-            return;
-          }
-        } else {
-          this._resetUserHold();
-        }
-      }
-
-      this._lastAcceptedUserNorm = dedupNorm;
-      this._lastAcceptedUserAt = Date.now();
-      this._turnSequence += 1;
-      this._lastUserNormalized = safeStr(nlp.normalized || nlp.raw);
-
-      if (isMeaningfulFirstUtterance(nlp)) {
-        this._hasMeaningfulUserTurn = true;
-      }
-    }
 
     this._call.conversationLog.push({
       role,
@@ -1165,6 +626,10 @@ class GeminiLiveSession {
         });
       }
     } catch {}
+
+    if (who === "user") {
+      this._applyLanguageDecision(nlp);
+    }
 
     logger.info(`UTTERANCE ${who}`, {
       ...this.meta,
@@ -1199,7 +664,9 @@ class GeminiLiveSession {
 
           if (found?.name) {
             const normalizedName =
-              String(found.name).trim() === "שאי" ? "שי" : String(found.name).trim();
+              String(found.name).trim() === "שאי"
+                ? "שי"
+                : String(found.name).trim();
 
             const existing = safeStr(this.meta?.caller_profile?.display_name) || "";
 
@@ -1228,10 +695,7 @@ class GeminiLiveSession {
       const intent = detectIntent({
         text: nlp.normalized || nlp.raw,
         intents: this.ssot?.intents || [],
-        callType: this._call.call_type,
       });
-
-      this._lastUserIntentId = String(intent?.intent_id || "");
 
       logger.info("INTENT_DETECTED", {
         ...this.meta,
@@ -1241,10 +705,6 @@ class GeminiLiveSession {
         language_locked: this._langState.lockedLanguage,
         intent,
       });
-
-      if (this._isOutbound() && this._maybeHandleOutboundUserTurn(nlp, intent, this._turnSequence)) {
-        return;
-      }
     }
 
     if (who === "bot") {
@@ -1263,7 +723,8 @@ class GeminiLiveSession {
         !this._hangupScheduled &&
         isClosingUtterance(botText)
       ) {
-        const callSid = safeStr(this._call?.callSid) || safeStr(this.meta?.callSid);
+        const callSid =
+          safeStr(this._call?.callSid) || safeStr(this.meta?.callSid);
 
         if (callSid) {
           this._hangupScheduled = true;
@@ -1295,95 +756,6 @@ class GeminiLiveSession {
     }
   }
 
-  _sendExactBotUtterance(text) {
-    if (!this.ws || this.closed || !this.ready) return;
-    const finalText = safeStr(text);
-    if (!finalText) return;
-
-    const msg = {
-      clientContent: {
-        turns: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: [
-                  "עני עכשיו בדיוק במשפט הבא, בעברית בלבד, בלי להוסיף שום דבר ובלי לתרגם.",
-                  "אסור לענות במילה אחת.",
-                  finalText,
-                ].join("\n"),
-              },
-            ],
-          },
-        ],
-        turnComplete: true,
-      },
-    };
-
-    try {
-      this.ws.send(JSON.stringify(msg));
-    } catch {}
-  }
-
-  _maybeHandleOutboundUserTurn(nlp, intent, turnSeq) {
-    if (!this._isOutbound()) return false;
-    if (turnSeq && turnSeq <= this._lastHandledUserTurn) return true;
-    if (Date.now() - this._lastScriptedReplyAt < 900) return true;
-    if (shouldIgnoreOutboundUserUtterance(nlp)) return true;
-
-    let selectedIntent = intent;
-    let selectedNlp = nlp;
-
-    const currentIntentId = String(intent?.intent_id || "");
-    const currentScore = Number(intent?.score || 0);
-
-    if (!currentIntentId || currentIntentId === "other" || currentScore <= 0) {
-      const recentUsers = (this._call.conversationLog || [])
-        .filter((x) => x.role === "user")
-        .slice(-3)
-        .map((x) => x.text)
-        .join(" ");
-
-      const mergedNlp = normalizeUtterance(recentUsers || nlp.raw);
-      if (!isIncompleteOutboundUserUtterance(mergedNlp)) {
-        const mergedIntent = detectIntent({
-          text: mergedNlp.normalized || mergedNlp.raw,
-          intents: this.ssot?.intents || [],
-          callType: this._call.call_type,
-        });
-
-        if (
-          String(mergedIntent?.intent_id || "") &&
-          String(mergedIntent?.intent_id || "") !== "other"
-        ) {
-          selectedIntent = mergedIntent;
-          selectedNlp = mergedNlp;
-        }
-      }
-    }
-
-    const scripted = buildScriptedOutboundReply(
-      selectedIntent,
-      selectedNlp,
-      this.meta,
-      this.ssot
-    );
-    if (!scripted) return false;
-
-    this._lastHandledUserTurn = turnSeq || this._turnSequence;
-    this._lastScriptedReplyAt = Date.now();
-    this._sendExactBotUtterance(scripted);
-
-    logger.info("SCRIPTED_OUTBOUND_REPLY", {
-      ...this.meta,
-      turn_seq: this._lastHandledUserTurn,
-      intent_id: String(selectedIntent?.intent_id || "other"),
-      reply: scripted,
-    });
-
-    return true;
-  }
-
   _sendProactiveOpening() {
     if (!this.ws || this.closed || !this.ready) return;
 
@@ -1398,9 +770,9 @@ class GeminiLiveSession {
       ssot: this.ssot,
       callerName: callerName || safeStr(this.meta?.contact_name),
       isReturning,
-      timeZone: env.TIME_ZONE || "Asia/Jerusalem",
+      timeZone: env.TIME_ZONE || 'Asia/Jerusalem',
       ttlMs: Number(env.MB_OPENING_CACHE_TTL_MS || 300000),
-      callType: safeStr(this.meta?.call_type) || "inbound",
+      callType: safeStr(this.meta?.call_type) || 'inbound',
       businessName: safeStr(this.meta?.business_name),
     });
 
@@ -1408,10 +780,8 @@ class GeminiLiveSession {
 
     const userKickoff = [
       "ענה עכשיו רק במשפט הבא, בדיוק כפי שהוא, בלי הקדמה, בלי הסבר, בלי מחשבות בקול ובלי שום טקסט נוסף.",
-      "חובה לענות בעברית בלבד.",
-      "אסור לענות במילה אחת, בשם בלבד, או באנגלית.",
       "אחרי המשפט עצור והמתן ללקוח.",
-      opening.replace(/\s{2,}/g, " ").trim(),
+      opening,
     ].join("\n");
 
     const msg = {
@@ -1425,7 +795,6 @@ class GeminiLiveSession {
       this.ws.send(JSON.stringify(msg));
       logger.info("Proactive opening sent", {
         ...this.meta,
-        call_type: this._call.call_type,
         greeting: openingPack.greeting,
         opening_len: opening.length,
         language_locked: this._langState.lockedLanguage,
@@ -1477,10 +846,9 @@ class GeminiLiveSession {
     this._call.finalized = true;
 
     try {
-      this._clearAllTimers();
-
       this._call.ended_at = nowIso();
-      const durationMs = Date.now() - new Date(this._call.started_at).getTime();
+      const durationMs =
+        Date.now() - new Date(this._call.started_at).getTime();
 
       const callMeta = {
         callSid: this._call.callSid,
@@ -1494,7 +862,7 @@ class GeminiLiveSession {
         caller_withheld: this._call.caller_withheld,
         finalize_reason: reason || "",
         language_locked: this._langState.lockedLanguage,
-        call_type: this._call.call_type || safeStr(this.meta?.call_type) || "inbound",
+        call_type: this._call.call_type || safeStr(this.meta?.call_type) || 'inbound',
         lead_id: this._call.lead_id || safeStr(this.meta?.lead_id),
         campaign_id: this._call.campaign_id || safeStr(this.meta?.campaign_id),
         contact_name: this._call.contact_name || safeStr(this.meta?.contact_name),
@@ -1503,7 +871,9 @@ class GeminiLiveSession {
 
       if (this._passiveCtx && passiveCallContext?.finalizeCtx) {
         try {
-          callMeta.passive_context = passiveCallContext.finalizeCtx(this._passiveCtx);
+          callMeta.passive_context = passiveCallContext.finalizeCtx(
+            this._passiveCtx
+          );
         } catch {}
       }
 

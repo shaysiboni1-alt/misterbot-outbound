@@ -26,7 +26,6 @@ router.all("/twilio/outbound/voice", (req, res) => {
     contact_name: q.contact_name || "",
     business_name: q.business_name || "",
     campaign_id: q.campaign_id || "",
-    prewarm_key: q.prewarm_key || "",
   };
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -41,7 +40,6 @@ router.all("/twilio/outbound/voice", (req, res) => {
       <Parameter name="contact_name" value="${esc(params.contact_name)}" />
       <Parameter name="business_name" value="${esc(params.business_name)}" />
       <Parameter name="campaign_id" value="${esc(params.campaign_id)}" />
-      <Parameter name="prewarm_key" value="${esc(params.prewarm_key)}" />
     </Stream>
   </Connect>
   <Pause length="600"/>
