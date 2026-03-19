@@ -177,6 +177,7 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
         "- If the caller shares pain like missed calls, lead loss, overload, booking, or customer-service pressure, acknowledge it briefly and explain how Mr.Bot helps.",
         "- Ask only one focused follow-up question at a time.",
         "- If the caller is interested, propose a callback from a sales manager or continuation with more details.",
+        "- If the caller asks about price, answer briefly that pricing depends on volume/use case and offer to connect for an exact quote.",
         "- Never stall, never repeat only the name, and never give one-word answers.",
         "- Never answer in English during a Hebrew outbound call.",
         "- Never say filler like 'רגע, אה'.",
@@ -358,7 +359,7 @@ function isBadBotFragment(text) {
   if (!norm) return true;
   const compact = compactHeb(norm);
   if (wordCount(norm) <= 1) return true;
-  if (/^(שי|shay|רגע,?\s*אה|אה\.?|הממ+|what.*|human-like|okay\.?|ok\.?|להרבה|maybe|alo|hello|hi)$/iu.test(norm)) return true;
+  if (/^(שי|shay|רגע,?\s*אה|אה\.?|הממ+|what.*|human-like|okay\.?|ok\.?|להרבה|maybe|alo|hello|hi|hallo)$/iu.test(norm)) return true;
   if (/^[A-Za-z ,.'"?!-]+$/.test(norm)) return true;
   if (compact.length < 8) return true;
   return false;
@@ -371,20 +372,57 @@ function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
   const settings = ssot?.settings || {};
   const busyTemplate = safeStr(settings.OUTBOUND_IF_BUSY_TEMPLATE);
   const notRelevantTemplate = safeStr(settings.OUTBOUND_IF_NOT_RELEVANT_TEMPLATE);
+  const pricingTemplate = safeStr(settings.OUTBOUND_PRICE_TEMPLATE);
+  const contactName = safeStr(meta?.contact_name) || safeStr(meta?.caller_profile?.display_name);
 
   if (intentId === "outbound_slow_down" || /(לא\s*הבנתי|לא\s*שמעתי|מהר\s*מדי|דברי\s*לאט|תסבירי\s*יותר\s*לאט|מדברת\s*מהר|תדברי\s*לאט|מפסיקה\s*לדבר|ממשיכה\s*לדבר)/u.test(norm) || /לאהבנתי|מהרמדי|דברילאט|מדברתלימהר|מפסיקהלדבר|ממשיכהלדבר/.test(compact)) {
     return "בטח, אסביר לאט: אנחנו נותנים מענה טלפוני חכם שעונה לשיחות ולוקח פרטים.";
   }
-  if (intentId === "outbound_who_are_you" || /(מי\s*אתם|מי\s*את|מה\s*אתם|מה\s*את)/u.test(norm) || /מיאתם|מיאת|מהאתם|מהאת/.test(compact)) {
-    return "אני ממיסטר בוט, ואנחנו עוזרים לעסקים לענות לשיחות ולקחת לידים.";
+
+  if (
+    intentId === "outbound_who_are_you" ||
+    /(את יודעת מי אני|מי אני|מי\s*אתם|מי\s*את|מה\s*אתם|מה\s*את)/u.test(norm) ||
+    /אתיודעתמיאני|מיאני|מיאתם|מיאת|מהאתם|מהאת/.test(compact)
+  ) {
+    if (contactName) {
+      return `${contactName}, כן, אני רואה שאני מדבר עם שי, ואני ממיסטר בוט. רציתי לבדוק אם מענה טלפוני חכם יכול להיות רלוונטי לעסק שלך.`;
+    }
+    return "אני ממיסטר בוט, ורציתי לבדוק אם מענה טלפוני חכם יכול להיות רלוונטי לעסק שלך.";
   }
-  if (intentId === "outbound_how_did_you_get_to_me" || /(איך\s*הגעת|איך\s*הגעתם|מאיפה\s*יש\s*לך\s*את\s*הטלפון|מאיפה\s*יש\s*לכם\s*את\s*המספר)/u.test(norm) || /איךהגעתאליי|איךהגעתםאליי|מאיפהישלךאתהטלפוןשלי|מאיפהישלכםאתהמספרשלי/.test(compact)) {
-    return "המספר הגיע מפרטי קשר עסקיים זמינים, ורציתי רק לבדוק אם זה רלוונטי לעסק שלך.";
+
+  if (
+    intentId === "outbound_how_did_you_get_to_me" ||
+    /(איך\s*הגעת|איך\s*הגעתם|מאיפה\s*יש\s*לך\s*את\s*הטלפון|מאיפה\s*יש\s*לכם\s*את\s*המספר)/u.test(norm) ||
+    /איךהגעתאליי|איךהגעתםאליי|מאיפהישלךאתהטלפוןשלי|מאיפהישלכםאתהמספרשלי/.test(compact)
+  ) {
+    return "המספר הגיע מפרטי קשר עסקיים זמינים, והמטרה היא רק לבדוק אם השירות שלנו רלוונטי לעסק שלך.";
   }
-  if (intentId === "outbound_what_do_you_offer" || /(מה\s*אתם\s*מציעים|מה\s*את\s*מציעה|מה\s*אתם\s*יכולים|תסבירי\s*לי|ספרי\s*לי|תספרי\s*לי)/u.test(norm) || /מהאתםמציעים|מהאתמציעה|מהאתםיכולים|תסבירילימה|ספריליקצת|תספריליקצת/.test(compact)) {
-    return "אנחנו נותנים מענה טלפוני חכם שעונה לשיחות, לוקח פרטים ועוזר בתיאומים ולידים.";
+
+  if (
+    intentId === "packages_info" ||
+    intentId === "outbound_price" ||
+    /(כמה\s*זה\s*עולה|עלות|מחיר|כמה\s*עולה|מה\s*המחיר)/u.test(norm) ||
+    /כמהזהעולה|כמהעולה|מההמחיר|עלות|מחיר/.test(compact)
+  ) {
+    return (
+      pricingTemplate ||
+      "המחיר תלוי בהיקף השיחות ובמה שצריך שהמערכת תעשה, אז בדרך כלל נותנים הצעת מחיר לפי הצורך של העסק."
+    );
   }
-  if (intentId === "outbound_business_context" || /(לעסק\s*שלי|מסעדה|חנות|קליניקה|מרפאה|מרפאת\s*שיניים|משרד|עסק)/u.test(norm) || /לעסקשלי|מרפאתשיניים|חנותפרחים/.test(compact)) {
+
+  if (
+    intentId === "outbound_what_do_you_offer" ||
+    /(מה\s*אתם\s*מציעים|מה\s*את\s*מציעה|מה\s*אתם\s*יכולים|תסבירי\s*לי|ספרי\s*לי|תספרי\s*לי)/u.test(norm) ||
+    /מהאתםמציעים|מהאתמציעה|מהאתםיכולים|תסבירילימה|ספריליקצת|תספריליקצת/.test(compact)
+  ) {
+    return "אנחנו נותנים מענה טלפוני חכם לעסקים, כדי לענות לשיחות, לקחת פרטים ולעזור בתיאומים ולידים.";
+  }
+
+  if (
+    intentId === "outbound_business_context" ||
+    /(לעסק\s*שלי|מסעדה|חנות|קליניקה|מרפאה|מרפאת\s*שיניים|משרד|עסק)/u.test(norm) ||
+    /לעסקשלי|מרפאתשיניים|חנותפרחים/.test(compact)
+  ) {
     if (/מרפאת\s*שיניים|רופא\s*שיניים/u.test(norm) || /מרפאתשיניים/.test(compact)) {
       return "למרפאת שיניים זה יכול להתאים מאוד בקביעת תורים, מענה לשיחות והורדת עומס מהקבלה.";
     }
@@ -396,21 +434,34 @@ function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
     }
     return "כן, זה מתאים לעסקים שמקבלים שיחות ופניות ורוצים מענה רציף בלי להעמיס על הצוות.";
   }
-  if (intentId === "outbound_interested" || /(רלוונטי|יכול\s*להתאים|נשמע\s*טוב|חיובי|מעניין)/u.test(norm) || /רלוונטי|יכוללהתאים|נשמעטוב/.test(compact)) {
+
+  if (
+    intentId === "outbound_interested" ||
+    /(רלוונטי|יכול\s*להתאים|נשמע\s*טוב|חיובי|מעניין)/u.test(norm) ||
+    /רלוונטי|יכוללהתאים|נשמעטוב/.test(compact)
+  ) {
     return "מעולה, זה יכול לעזור לך לענות לשיחות, לקחת פרטים ולא לפספס פניות.";
   }
+
   if (intentId === "outbound_callback_later") {
     return busyTemplate || "בשמחה, מתי נוח יותר שנחזור אליך בקצרה?";
   }
+
   if (intentId === "outbound_not_interested") {
-    return notRelevantTemplate || "מובן, תודה רבה ואם זה יהיה רלוונטי בעתיד נשמח לעזור.";
+    return notRelevantTemplate || "מובן, תודה רבה. אם זה יהיה רלוונטי בעתיד, נשמח לעזור.";
   }
+
   if (intentId === "outbound_already_has_solution") {
     return "מעולה, ואם תרצו בעתיד חלופה למענה הטלפוני נשמח לעזור.";
   }
-  if (/(את יכולה לדבר|את יכולה לעזור|מה זה|מה זה אומר|מה את יכולה לעזור|מה את יכולה לעשות)/u.test(norm) || /אתיכולהלדבר|אתיכולהלעזור|מהזה|מהאתיכולהלעזור/.test(compact)) {
+
+  if (
+    /(את יכולה לדבר|את יכולה לעזור|מה זה|מה זה אומר|מה את יכולה לעזור|מה את יכולה לעשות)/u.test(norm) ||
+    /אתיכולהלדבר|אתיכולהלעזור|מהזה|מהאתיכולהלעזור/.test(compact)
+  ) {
     return "כן, אני יכולה לעזור עם מענה לשיחות, לקיחת פרטים, תיאומים ולידים.";
   }
+
   return "אנחנו נותנים מענה טלפוני חכם לעסקים, כדי לענות לשיחות ולקחת פרטים בצורה מסודרת.";
 }
 
@@ -477,6 +528,7 @@ class GeminiLiveSession {
     this._skipProactiveOpening = Boolean(this.meta?.skip_proactive_opening);
     this._greetingSent = this._skipProactiveOpening;
     this._openingQueuedUntilFirstUserUtterance = false;
+    this._openingTimer = null;
     this._lastScriptedReplyAt = 0;
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
@@ -484,6 +536,10 @@ class GeminiLiveSession {
     this._hasMeaningfulUserTurn = false;
     this._lastAcceptedUserNorm = "";
     this._lastAcceptedUserAt = 0;
+    this._turnSequence = 0;
+    this._lastHandledUserTurn = 0;
+    this._lastUserIntentId = "";
+    this._lastUserNormalized = "";
 
     this._langState = {
       lockedLanguage: safeStr(env.MB_DEFAULT_LANGUAGE) || "he",
@@ -566,6 +622,10 @@ class GeminiLiveSession {
       clearTimeout(this._trBuf.bot.timer);
       this._trBuf.bot.timer = null;
     }
+    if (this._openingTimer) {
+      clearTimeout(this._openingTimer);
+      this._openingTimer = null;
+    }
   }
 
   _resetUserHold() {
@@ -605,6 +665,32 @@ class GeminiLiveSession {
     }
 
     return false;
+  }
+
+  _scheduleOpeningIfNeeded() {
+    if (this.closed || !this.ready) return;
+    if (this._greetingSent || this._skipProactiveOpening) return;
+
+    const isOutbound = String(this._call.call_type || "").toLowerCase() === "outbound";
+    const hasPrewarmKey = !!safeStr(this.meta?.prewarm_key);
+    const delayMs = isOutbound && hasPrewarmKey
+      ? Math.max(600, Number(env.MB_PREWARM_OPENING_GRACE_MS || 1200))
+      : 0;
+
+    if (this._openingTimer) clearTimeout(this._openingTimer);
+
+    this._openingTimer = setTimeout(() => {
+      this._openingTimer = null;
+      if (this.closed || !this.ready || this._greetingSent || this._skipProactiveOpening) return;
+      this._greetingSent = true;
+      this._sendProactiveOpening();
+    }, delayMs);
+
+    logger.info("Opening dispatch scheduled", {
+      ...this.meta,
+      delay_ms: delayMs,
+      has_prewarm_key: hasPrewarmKey,
+    });
   }
 
   start() {
@@ -710,8 +796,7 @@ class GeminiLiveSession {
         !this._greetingSent &&
         !this._openingQueuedUntilFirstUserUtterance
       ) {
-        this._greetingSent = true;
-        this._sendProactiveOpening();
+        this._scheduleOpeningIfNeeded();
       }
 
       try {
@@ -991,6 +1076,8 @@ class GeminiLiveSession {
 
       this._lastAcceptedUserNorm = dedupNorm;
       this._lastAcceptedUserAt = Date.now();
+      this._turnSequence += 1;
+      this._lastUserNormalized = safeStr(nlp.normalized || nlp.raw);
 
       if (isMeaningfulFirstUtterance(nlp)) {
         this._hasMeaningfulUserTurn = true;
@@ -1081,6 +1168,8 @@ class GeminiLiveSession {
         callType: this._call.call_type,
       });
 
+      this._lastUserIntentId = String(intent?.intent_id || "");
+
       logger.info("INTENT_DETECTED", {
         ...this.meta,
         text: nlp.raw,
@@ -1090,7 +1179,7 @@ class GeminiLiveSession {
         intent,
       });
 
-      if (this._maybeHandleOutboundUserTurn(nlp, intent)) {
+      if (this._maybeHandleOutboundUserTurn(nlp, intent, this._turnSequence)) {
         return;
       }
     }
@@ -1168,34 +1257,54 @@ class GeminiLiveSession {
     } catch {}
   }
 
-  _maybeHandleOutboundUserTurn(nlp, intent) {
+  _maybeHandleOutboundUserTurn(nlp, intent, turnSeq) {
     if (String(this._call.call_type || "").toLowerCase() !== "outbound") return false;
+    if (turnSeq && turnSeq <= this._lastHandledUserTurn) return true;
     if (Date.now() - this._lastScriptedReplyAt < 900) return true;
     if (shouldIgnoreOutboundUserUtterance(nlp)) return true;
 
-    const recentUsers = (this._call.conversationLog || [])
-      .filter((x) => x.role === "user")
-      .slice(-3)
-      .map((x) => x.text)
-      .join(" ");
+    let selectedIntent = intent;
+    let selectedNlp = nlp;
 
-    const mergedNlp = normalizeUtterance(recentUsers || nlp.raw);
+    const currentIntentId = String(intent?.intent_id || "");
+    const currentScore = Number(intent?.score || 0);
 
-    if (isIncompleteOutboundUserUtterance(mergedNlp)) {
-      return false;
+    if (!currentIntentId || currentIntentId === "other" || currentScore <= 0) {
+      const recentUsers = (this._call.conversationLog || [])
+        .filter((x) => x.role === "user")
+        .slice(-3)
+        .map((x) => x.text)
+        .join(" ");
+
+      const mergedNlp = normalizeUtterance(recentUsers || nlp.raw);
+      if (!isIncompleteOutboundUserUtterance(mergedNlp)) {
+        const mergedIntent = detectIntent({
+          text: mergedNlp.normalized || mergedNlp.raw,
+          intents: this.ssot?.intents || [],
+          callType: this._call.call_type,
+        });
+
+        if (String(mergedIntent?.intent_id || "") && String(mergedIntent?.intent_id || "") !== "other") {
+          selectedIntent = mergedIntent;
+          selectedNlp = mergedNlp;
+        }
+      }
     }
 
-    const mergedIntent = detectIntent({
-      text: mergedNlp.normalized || mergedNlp.raw,
-      intents: this.ssot?.intents || [],
-      callType: this._call.call_type,
-    });
-
-    const scripted = buildScriptedOutboundReply(mergedIntent, mergedNlp, this.meta, this.ssot);
+    const scripted = buildScriptedOutboundReply(selectedIntent, selectedNlp, this.meta, this.ssot);
     if (!scripted) return false;
 
+    this._lastHandledUserTurn = turnSeq || this._turnSequence;
     this._lastScriptedReplyAt = Date.now();
     this._sendExactBotUtterance(scripted);
+
+    logger.info("SCRIPTED_OUTBOUND_REPLY", {
+      ...this.meta,
+      turn_seq: this._lastHandledUserTurn,
+      intent_id: String(selectedIntent?.intent_id || "other"),
+      reply: scripted,
+    });
+
     return true;
   }
 
