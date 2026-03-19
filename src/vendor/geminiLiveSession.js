@@ -367,11 +367,8 @@ function isBadBotFragment(text) {
 function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
   const norm = safeStr(nlp?.normalized || nlp?.raw);
   const compact = compactHeb(norm);
-  const business = safeStr(meta?.business_name);
   const intentId = String(intent?.intent_id || "other");
   const settings = ssot?.settings || {};
-  const valueHook = safeStr(settings.OUTBOUND_VALUE_HOOK) || "אנחנו עוזרים לעסקים לא לפספס שיחות, לידים ופניות עם מענה קולי שנשמע אנושי.";
-  const ctaTemplate = safeStr(settings.OUTBOUND_CTA_TEMPLATE);
   const busyTemplate = safeStr(settings.OUTBOUND_IF_BUSY_TEMPLATE);
   const notRelevantTemplate = safeStr(settings.OUTBOUND_IF_NOT_RELEVANT_TEMPLATE);
 
@@ -448,6 +445,23 @@ function normHold(existing, extra) {
   return `${a} ${b}`.replace(/\s{2,}/g, " ").trim();
 }
 
+function normalizeForDup(text) {
+  return safeStr(text)
+    .replace(/\s+/g, " ")
+    .replace(/[.,!?;:'"()\-]+/g, "")
+    .trim();
+}
+
+function looksLikeSpokenOpeningEcho(userText, spokenOpening) {
+  const a = normalizeForDup(userText);
+  const b = normalizeForDup(spokenOpening);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 8 && b.includes(a)) return true;
+  if (b.length >= 8 && a.includes(b)) return true;
+  return false;
+}
+
 class GeminiLiveSession {
   constructor({ onGeminiAudioUlaw8kBase64, onGeminiText, onTranscript, meta, ssot }) {
     this.onGeminiAudioUlaw8kBase64 = onGeminiAudioUlaw8kBase64;
@@ -466,6 +480,11 @@ class GeminiLiveSession {
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
     this._closingSentAfterCallback = false;
+
+    this._postOpeningFollowupTimer = null;
+    this._hasMeaningfulUserTurn = false;
+    this._lastAcceptedUserNorm = "";
+    this._lastAcceptedUserAt = 0;
 
     this._langState = {
       lockedLanguage: safeStr(env.MB_DEFAULT_LANGUAGE) || "he",
@@ -529,6 +548,51 @@ class GeminiLiveSession {
         });
       }
     } catch {}
+  }
+
+  _clearPostOpeningFollowup() {
+    if (this._postOpeningFollowupTimer) {
+      clearTimeout(this._postOpeningFollowupTimer);
+      this._postOpeningFollowupTimer = null;
+    }
+  }
+
+  _armPostOpeningFollowup(trigger) {
+    if (String(this._call.call_type || "").toLowerCase() !== "outbound") return;
+    if (!this.ws || this.closed) return;
+    if (this._hasMeaningfulUserTurn) return;
+
+    this._clearPostOpeningFollowup();
+
+    const delayMs = Math.max(
+      1200,
+      Number(env.MB_OUTBOUND_POST_OPENING_FOLLOWUP_MS || 2200)
+    );
+
+    this._postOpeningFollowupTimer = setTimeout(() => {
+      this._postOpeningFollowupTimer = null;
+      if (this.closed || !this.ready) return;
+      if (this._hasMeaningfulUserTurn) return;
+
+      const followup =
+        safeStr(this.ssot?.settings?.OUTBOUND_POST_OPENING_FOLLOWUP_TEMPLATE) ||
+        "רציתי רק לבדוק אם זה משהו שיכול להיות רלוונטי לעסק שלך.";
+
+      this._lastScriptedReplyAt = Date.now();
+      this._sendExactBotUtterance(followup);
+
+      logger.info("Outbound post-opening followup sent", {
+        ...this.meta,
+        trigger,
+        followup,
+      });
+    }, delayMs);
+
+    logger.info("Outbound post-opening followup armed", {
+      ...this.meta,
+      trigger,
+      delay_ms: delayMs,
+    });
   }
 
   start() {
@@ -612,6 +676,10 @@ class GeminiLiveSession {
       try {
         this.ws.send(JSON.stringify(setup));
         this.ready = true;
+
+        if (this._skipProactiveOpening && safeStr(this.meta?.spoken_opening)) {
+          this._armPostOpeningFollowup("prewarmed_opening");
+        }
       } catch (e) {
         logger.error("Failed to send Gemini setup", {
           ...this.meta,
@@ -628,7 +696,12 @@ class GeminiLiveSession {
         return;
       }
 
-      if (!this._skipProactiveOpening && (msg?.setupComplete || msg?.serverContent) && !this._greetingSent && !this._openingQueuedUntilFirstUserUtterance) {
+      if (
+        !this._skipProactiveOpening &&
+        (msg?.setupComplete || msg?.serverContent) &&
+        !this._greetingSent &&
+        !this._openingQueuedUntilFirstUserUtterance
+      ) {
         this._greetingSent = true;
         this._sendProactiveOpening();
       }
@@ -681,6 +754,7 @@ class GeminiLiveSession {
       const reason = reasonBuf ? reasonBuf.toString("utf8") : "";
       this.closed = true;
       this.ready = false;
+      this._clearPostOpeningFollowup();
 
       this._flushTranscript("user");
       this._flushTranscript("bot");
@@ -846,7 +920,35 @@ class GeminiLiveSession {
     const role = who === "user" ? "user" : "assistant";
 
     if (who === "user") {
+      if (
+        String(this._call.call_type || "").toLowerCase() === "outbound" &&
+        safeStr(this.meta?.spoken_opening) &&
+        looksLikeSpokenOpeningEcho(nlp.normalized || nlp.raw, this.meta.spoken_opening)
+      ) {
+        logger.info("Ignoring opening echo as user transcript", {
+          ...this.meta,
+          text: nlp.raw,
+          normalized: nlp.normalized,
+        });
+        return;
+      }
+
+      const dedupNorm = normalizeForDup(nlp.normalized || nlp.raw);
+      if (
+        dedupNorm &&
+        dedupNorm === this._lastAcceptedUserNorm &&
+        Date.now() - this._lastAcceptedUserAt < Math.max(1500, Number(env.MB_DUP_USER_TRANSCRIPT_WINDOW_MS || 2500))
+      ) {
+        logger.info("Ignoring duplicate user transcript", {
+          ...this.meta,
+          text: nlp.raw,
+          normalized: nlp.normalized,
+        });
+        return;
+      }
+
       this._applyLanguageDecision(nlp);
+
       if (String(this._call.call_type || "").toLowerCase() === "outbound") {
         if (isIncompleteOutboundUserUtterance(nlp)) {
           holder.text = normHold(holder.text, nlp.raw);
@@ -856,6 +958,14 @@ class GeminiLiveSession {
         if (shouldIgnoreOutboundUserUtterance(nlp)) {
           return;
         }
+      }
+
+      this._lastAcceptedUserNorm = dedupNorm;
+      this._lastAcceptedUserAt = Date.now();
+
+      if (isMeaningfulFirstUtterance(nlp)) {
+        this._hasMeaningfulUserTurn = true;
+        this._clearPostOpeningFollowup();
       }
     }
 
@@ -1097,6 +1207,8 @@ class GeminiLiveSession {
 
     try {
       this.ws.send(JSON.stringify(msg));
+      this._armPostOpeningFollowup("live_opening");
+
       logger.info("Proactive opening sent", {
         ...this.meta,
         greeting: openingPack.greeting,
@@ -1150,6 +1262,8 @@ class GeminiLiveSession {
     this._call.finalized = true;
 
     try {
+      this._clearPostOpeningFollowup();
+
       this._call.ended_at = nowIso();
       const durationMs =
         Date.now() - new Date(this._call.started_at).getTime();
