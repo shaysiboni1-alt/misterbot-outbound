@@ -156,9 +156,8 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta, outboundState = null)
     "- Never identify as an AI, model, assistant model, or LLM unless the caller directly asks; then say you are a digital representative of the business.",
     "- Speak briefly, naturally, and only as a customer-facing phone representative.",
     "- NEVER output analysis, internal planning, reasoning, markdown, bullets, JSON, stage labels, or notes.",
-    "- NEVER say things like 'I understand', 'I will', 'I'm now', 'I've processed', 'composing', 'confirming', or any meta explanation.",
+    "- NEVER say meta explanations.",
     "- Output ONLY the final customer-facing sentence(s) to be spoken aloud.",
-    "- If you are about to say anything meta, stop and instead say the customer-facing sentence only.",
   ].join("\n"));
 
   sections.push([
@@ -173,13 +172,10 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta, outboundState = null)
   sections.push([
     "DIALOG POLICY (HARD RULE):",
     "- Ask only ONE question at a time.",
-    "- Never bundle multiple data-collection questions into one turn.",
+    "- Never bundle multiple questions in one turn.",
     "- Prefer short, focused follow-up questions.",
-    "- If the caller corrects you, apologize briefly, correct course, and continue naturally.",
-    "- If the caller says something like 'אני אישה' or 'אני בת', do NOT treat it as a name.",
-    "- If the caller corrects gender/name confusion, acknowledge briefly and then ask for the name again only if needed for the request.",
     "- If the call is only for information, answer briefly and do not force lead capture.",
-    "- If the caller confirms callback to the identified number, immediately acknowledge, close politely, and end the flow.",
+    "- If the caller confirms callback to the identified number, acknowledge briefly and end.",
   ].join("\n"));
 
   if (callerName) {
@@ -195,8 +191,7 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta, outboundState = null)
     sections.push([
       "WITHHELD NUMBER POLICY:",
       "- The caller number is withheld/private.",
-      "- If the caller leaves a request or asks for a callback, you MUST collect a callback number explicitly.",
-      "- Do not say you will return to the identified number because there is no usable caller ID.",
+      "- If the caller asks for a callback, collect a callback number explicitly.",
     ].join("\n"));
   }
 
@@ -262,7 +257,7 @@ function looksLikeReasoningText(text) {
   if (!t) return false;
   return (
     /\*\*.+\*\*/.test(t) ||
-    /\b(Composing the Response|Confirming|Implementing|Addressing|Gathering|Finalizing|Prioritizing|Initiating|Acknowledge|Pinpointing|Reasoning|I(?:'| a)m now|I've|I have successfully|I will now|The user is asking|triggering the|based on the context|SETTINGS_CONTEXT|OPENING_SCRIPT|INTENT_ROUTER_PROMPT|LEAD_CAPTURE_PROMPT|OUTBOUND_STEP_POLICY)\b/i.test(
+    /\b(Composing the Response|Confirming|Implementing|Addressing|Gathering|Finalizing|Prioritizing|Initiating|Reasoning|SETTINGS_CONTEXT|INTENTS_TABLE|OUTBOUND_STEP_POLICY)\b/i.test(
       t
     )
   );
@@ -283,6 +278,28 @@ function isAffirmativeUtterance(text) {
   return /^(אה,\s*)?(כן([.!?,\s]|$)|נכון([.!?,\s]|$)|אוקיי([.!?,\s]|$)|אוקי([.!?,\s]|$)|בסדר([.!?,\s]|$)|בטח([.!?,\s]|$)|יאללה([.!?,\s]|$))+/u.test(
     t
   );
+}
+
+function wordCount(text) {
+  const t = safeStr(text);
+  if (!t) return 0;
+  return t.split(/\s+/).filter(Boolean).length;
+}
+
+function isShortAck(text) {
+  const t = safeStr(text);
+  if (!t) return false;
+  return /^(הלו|שלום|כן|כן\?|מי זה|מי מדבר|מי מדברת|דבר|תגיד|תגידי|שומע|שומעת)$/u.test(t);
+}
+
+function isLikelyFragment(text) {
+  const t = safeStr(text);
+  if (!t) return true;
+  const wc = wordCount(t);
+  if (isShortAck(t)) return false;
+  if (wc <= 1 && t.length < 6) return true;
+  if (/^[א-ת]{1,4}$/u.test(t)) return true;
+  return false;
 }
 
 async function deliverWebhook(url, payload, label) {
@@ -314,8 +331,6 @@ class GeminiLiveSession {
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
     this._closingSentAfterCallback = false;
-    this._lastStepSteeringAt = 0;
-    this._lastStepSteeringKey = "";
 
     this._langState = {
       lockedLanguage: safeStr(env.MB_DEFAULT_LANGUAGE) || "he",
@@ -420,8 +435,8 @@ class GeminiLiveSession {
         this._call.outbound_state
       );
 
-      const vadPrefix = clampNum(env.MB_VAD_PREFIX_MS ?? 40, 20, 600, 40);
-      const vadSilence = clampNum(env.MB_VAD_SILENCE_MS ?? 120, 80, 1500, 120);
+      const vadPrefix = clampNum(env.MB_VAD_PREFIX_MS ?? 25, 20, 600, 25);
+      const vadSilence = clampNum(env.MB_VAD_SILENCE_MS ?? 180, 120, 1500, 180);
 
       const setup = {
         setup: {
@@ -542,10 +557,21 @@ class GeminiLiveSession {
     });
   }
 
+  _computeFlushDelay(who) {
+    const holder = this._trBuf[who];
+    const text = safeStr(holder?.text);
+
+    if (who === "bot") return 260;
+    if (!text) return 420;
+    if (isShortAck(text)) return 160;
+    if (isLikelyFragment(text)) return 700;
+    return 420;
+  }
+
   _scheduleFlush(who) {
     const holder = this._trBuf[who];
     if (holder.timer) clearTimeout(holder.timer);
-    holder.timer = setTimeout(() => this._flushTranscript(who), who === "user" ? 220 : 260);
+    holder.timer = setTimeout(() => this._flushTranscript(who), this._computeFlushDelay(who));
   }
 
   _onTranscriptChunk(who, chunk) {
@@ -649,61 +675,13 @@ class GeminiLiveSession {
     }
   }
 
-  _sendOutboundStepSteering(nlp, detectedIntent, transition) {
-    if (!this.ws || this.closed || !this.ready) return;
-    if (this._call.call_type !== "outbound") return;
-    if (!this._call.outbound_state) return;
-
-    const prompt = buildOutboundStepPrompt(this._call.outbound_state);
-    if (!prompt) return;
-
-    const currentStep = safeStr(this._call.outbound_state.current_step);
-    const intentId = safeStr(detectedIntent?.intent_id || detectedIntent || "other_general");
-    const key = `${currentStep}|${intentId}|${safeStr(nlp?.normalized || nlp?.raw)}`;
-    const now = Date.now();
-
-    if (this._lastStepSteeringKey === key && now - this._lastStepSteeringAt < 1200) {
-      return;
-    }
-
-    this._lastStepSteeringKey = key;
-    this._lastStepSteeringAt = now;
-
-    const steeringText = [
-      "INTERNAL OUTBOUND STEP UPDATE. DO NOT SAY THIS OUT LOUD.",
-      prompt,
-      `last_customer_text=${safeStr(nlp?.normalized || nlp?.raw)}`,
-      `last_detected_intent=${intentId}`,
-      `transition_allowed=${transition?.allowed ? "true" : "false"}`,
-      `transition_reason=${safeStr(transition?.reason)}`,
-      `intent_bucket=${safeStr(transition?.bucket)}`,
-      "Respond to the customer naturally according to the current step only.",
-      "Do not mention step names, intents, rules, or internal logic.",
-      "Output only the customer-facing sentence(s) in Hebrew unless language policy says otherwise.",
-    ].join("\n");
-
-    const msg = {
-      clientContent: {
-        turns: [{ role: "user", parts: [{ text: steeringText }] }],
-        turnComplete: true,
-      },
-    };
-
-    try {
-      this.ws.send(JSON.stringify(msg));
-      logger.info("OUTBOUND_STEP_STEERING_SENT", {
-        ...this.meta,
-        current_step: currentStep,
-        intent_id: intentId,
-        transition_allowed: !!transition?.allowed,
-        transition_reason: safeStr(transition?.reason),
-      });
-    } catch (e) {
-      logger.debug("Failed sending outbound step steering", {
-        ...this.meta,
-        error: e.message,
-      });
-    }
+  _shouldRunIntentOnUserText(text) {
+    const t = safeStr(text);
+    if (!t) return false;
+    if (isShortAck(t)) return true;
+    if (t.length >= 8) return true;
+    if (wordCount(t) >= 2) return true;
+    return false;
   }
 
   _flushTranscript(who) {
@@ -808,40 +786,46 @@ class GeminiLiveSession {
         this._sendImmediateCallbackClosing();
       }
 
-      const intent = detectIntent({
-        text: nlp.normalized || nlp.raw,
-        intents: this.ssot?.intents || [],
-      });
-
-      logger.info("INTENT_DETECTED", {
-        ...this.meta,
-        text: nlp.raw,
-        normalized: nlp.normalized,
-        lang: nlp.lang,
-        language_locked: this._langState.lockedLanguage,
-        intent,
-      });
-
-      if (this._call.call_type === "outbound" && this._call.outbound_state) {
-        const transition = advanceOutboundConversationState(
-          this._call.outbound_state,
-          intent
-        );
-        this._call.outbound_state = transition.state;
-
-        logger.info("OUTBOUND_STEP_TRANSITION", {
-          ...this.meta,
-          detected_intent: safeStr(intent?.intent_id),
-          current_step: safeStr(transition.current_step),
-          next_step: safeStr(transition.next_step),
-          allowed: !!transition.allowed,
-          reason: safeStr(transition.reason),
-          bucket: safeStr(transition.bucket),
-          objection_count: Number(this._call.outbound_state?.objection_count || 0),
-          qualified_candidate: !!this._call.outbound_state?.qualified_candidate,
+      if (this._shouldRunIntentOnUserText(nlp.normalized || nlp.raw)) {
+        const intent = detectIntent({
+          text: nlp.normalized || nlp.raw,
+          intents: this.ssot?.intents || [],
         });
 
-        this._sendOutboundStepSteering(nlp, intent, transition);
+        logger.info("INTENT_DETECTED", {
+          ...this.meta,
+          text: nlp.raw,
+          normalized: nlp.normalized,
+          lang: nlp.lang,
+          language_locked: this._langState.lockedLanguage,
+          intent,
+        });
+
+        if (this._call.call_type === "outbound" && this._call.outbound_state) {
+          const transition = advanceOutboundConversationState(
+            this._call.outbound_state,
+            intent
+          );
+          this._call.outbound_state = transition.state;
+
+          logger.info("OUTBOUND_STEP_TRANSITION", {
+            ...this.meta,
+            detected_intent: safeStr(intent?.intent_id),
+            current_step: safeStr(transition.current_step),
+            next_step: safeStr(transition.next_step),
+            allowed: !!transition.allowed,
+            reason: safeStr(transition.reason),
+            bucket: safeStr(transition.bucket),
+            objection_count: Number(this._call.outbound_state?.objection_count || 0),
+            qualified_candidate: !!this._call.outbound_state?.qualified_candidate,
+          });
+        }
+      } else {
+        logger.info("INTENT_SKIPPED_FRAGMENT", {
+          ...this.meta,
+          text: nlp.raw,
+          normalized: nlp.normalized,
+        });
       }
     }
 
@@ -937,6 +921,7 @@ class GeminiLiveSession {
         opening_len: opening.length,
         language_locked: this._langState.lockedLanguage,
         opening_cache_hit: openingPack.cache_hit,
+        dynamic_name: callerName || safeStr(this.meta?.contact_name) || "",
         current_step: safeStr(this._call?.outbound_state?.current_step),
       });
     } catch (e) {
