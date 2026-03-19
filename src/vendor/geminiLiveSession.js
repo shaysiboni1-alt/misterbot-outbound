@@ -153,7 +153,7 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta, outboundState = null)
   sections.push([
     "IDENTITY (NON-NEGOTIABLE):",
     "- You are the business phone assistant defined by SETTINGS and PROMPTS.",
-    "- Never identify as an AI, model, assistant model, or LLM unless the caller directly asks; then say you are a digital representative of the business.",
+    "- Never identify as an AI, model, assistant model, or LLM unless asked directly; then say you are a digital representative of the business.",
     "- Speak briefly, naturally, and only as a customer-facing phone representative.",
     "- NEVER output analysis, internal planning, reasoning, markdown, bullets, JSON, stage labels, or notes.",
     "- NEVER say meta explanations.",
@@ -176,6 +176,7 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta, outboundState = null)
     "- Prefer short, focused follow-up questions.",
     "- If the call is only for information, answer briefly and do not force lead capture.",
     "- If the caller confirms callback to the identified number, acknowledge briefly and end.",
+    "- Do not echo the user's words back verbatim unless repeating a short name for confirmation.",
   ].join("\n"));
 
   if (callerName) {
@@ -289,7 +290,9 @@ function wordCount(text) {
 function isShortAck(text) {
   const t = safeStr(text);
   if (!t) return false;
-  return /^(הלו|שלום|כן|כן\?|מי זה|מי מדבר|מי מדברת|דבר|תגיד|תגידי|שומע|שומעת)$/u.test(t);
+  return /^(הלו|שלום|כן|כן\?|מי זה|מי מדבר|מי מדברת|דבר|תגיד|תגידי|שומע|שומעת|hello|hello\.|hi|hi\.|okay|okay\.|ok|ok\.)$/iu.test(
+    t
+  );
 }
 
 function isLikelyFragment(text) {
@@ -328,6 +331,7 @@ class GeminiLiveSession {
     this.ready = false;
     this.closed = false;
     this._greetingSent = false;
+    this._openingKickoffTimer = null;
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
     this._closingSentAfterCallback = false;
@@ -471,6 +475,11 @@ class GeminiLiveSession {
       try {
         this.ws.send(JSON.stringify(setup));
         this.ready = true;
+
+        // fast path: לא מחכים ל-setupComplete כדי לשלוח פתיח ראשון
+        this._openingKickoffTimer = setTimeout(() => {
+          this._sendProactiveOpening();
+        }, 120);
       } catch (e) {
         logger.error("Failed to send Gemini setup", {
           ...this.meta,
@@ -487,8 +496,8 @@ class GeminiLiveSession {
         return;
       }
 
+      // fallback only
       if ((msg?.setupComplete || msg?.serverContent) && !this._greetingSent) {
-        this._greetingSent = true;
         this._sendProactiveOpening();
       }
 
@@ -541,6 +550,11 @@ class GeminiLiveSession {
       this.closed = true;
       this.ready = false;
 
+      if (this._openingKickoffTimer) {
+        clearTimeout(this._openingKickoffTimer);
+        this._openingKickoffTimer = null;
+      }
+
       this._flushTranscript("user");
       this._flushTranscript("bot");
 
@@ -563,7 +577,7 @@ class GeminiLiveSession {
 
     if (who === "bot") return 260;
     if (!text) return 420;
-    if (isShortAck(text)) return 160;
+    if (isShortAck(text)) return 140;
     if (isLikelyFragment(text)) return 700;
     return 420;
   }
@@ -880,6 +894,14 @@ class GeminiLiveSession {
 
   _sendProactiveOpening() {
     if (!this.ws || this.closed || !this.ready) return;
+    if (this._greetingSent) return;
+
+    this._greetingSent = true;
+
+    if (this._openingKickoffTimer) {
+      clearTimeout(this._openingKickoffTimer);
+      this._openingKickoffTimer = null;
+    }
 
     const callerProfile = this.meta?.caller_profile || null;
     let callerName = safeStr(callerProfile?.display_name) || "";
@@ -888,9 +910,12 @@ class GeminiLiveSession {
     const totalCalls = Number(callerProfile?.total_calls ?? 0);
     const isReturning = totalCalls > 0;
 
+    const contactName = safeStr(this.meta?.contact_name) || callerName;
+
     const openingPack = getCachedOpening({
       ssot: this.ssot,
-      callerName: callerName || safeStr(this.meta?.contact_name),
+      callerName,
+      contactName,
       isReturning,
       timeZone: env.TIME_ZONE || "Asia/Jerusalem",
       ttlMs: Number(env.MB_OPENING_CACHE_TTL_MS || 300000),
@@ -901,8 +926,8 @@ class GeminiLiveSession {
     const opening = openingPack.opening;
 
     const userKickoff = [
-      "ענה עכשיו רק במשפט הבא, בדיוק כפי שהוא, בלי הקדמה, בלי הסבר, בלי מחשבות בקול ובלי שום טקסט נוסף.",
-      "אחרי המשפט עצור והמתן ללקוח.",
+      "Say exactly the following sentence in Hebrew, with no added intro, no explanation, no self-talk, and no extra text.",
+      "After saying it, stop and wait for the caller.",
       opening,
     ].join("\n");
 
@@ -921,7 +946,10 @@ class GeminiLiveSession {
         opening_len: opening.length,
         language_locked: this._langState.lockedLanguage,
         opening_cache_hit: openingPack.cache_hit,
-        dynamic_name: callerName || safeStr(this.meta?.contact_name) || "",
+        dynamic_name: contactName || "",
+        agent_name:
+          safeStr(this.ssot?.settings?.OUTBOUND_AGENT_NAME) || "",
+        opening,
         current_step: safeStr(this._call?.outbound_state?.current_step),
       });
     } catch (e) {
