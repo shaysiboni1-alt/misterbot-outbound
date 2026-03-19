@@ -13,8 +13,14 @@ function toInt(value, fallback) {
 function splitCsv(value) {
   return safeStr(value)
     .split(",")
-    .map((s) => safeStr(s))
+    .map((s) => safeStr(s).toLowerCase())
     .filter(Boolean);
+}
+
+function normalizeIntentId(intentId) {
+  const id = safeStr(intentId).toLowerCase();
+  if (!id || id === "other") return "other_general";
+  return id;
 }
 
 function normalizeFlowRow(row) {
@@ -46,6 +52,7 @@ function defaultFlowRows() {
         "outbound_not_now",
         "outbound_callback_later",
         "outbound_wrong_person",
+        "outbound_not_interested",
       ],
       next_if_positive: "value_hook",
       next_if_objection: "opening",
@@ -63,6 +70,7 @@ function defaultFlowRows() {
         "outbound_not_now",
         "outbound_callback_later",
         "outbound_wrong_person",
+        "outbound_not_interested",
       ],
       next_if_positive: "value_hook",
       next_if_objection: "permission_check",
@@ -80,6 +88,8 @@ function defaultFlowRows() {
         "outbound_not_interested",
         "outbound_already_has_solution",
         "outbound_gatekeeper",
+        "outbound_ask_price",
+        "outbound_send_info",
       ],
       next_if_positive: "need_discovery",
       next_if_objection: "objection_or_interest",
@@ -97,6 +107,9 @@ function defaultFlowRows() {
         "qualified_lead",
         "outbound_not_interested",
         "outbound_not_now",
+        "outbound_callback_later",
+        "outbound_ask_price",
+        "outbound_send_info",
       ],
       next_if_positive: "micro_pitch",
       next_if_objection: "objection_or_interest",
@@ -114,6 +127,8 @@ function defaultFlowRows() {
         "outbound_ask_price",
         "outbound_send_info",
         "outbound_already_has_solution",
+        "outbound_not_interested",
+        "outbound_callback_later",
       ],
       next_if_positive: "qualification",
       next_if_objection: "objection_or_interest",
@@ -132,6 +147,8 @@ function defaultFlowRows() {
         "outbound_already_has_solution",
         "outbound_gatekeeper",
         "outbound_not_now",
+        "outbound_callback_later",
+        "outbound_not_interested",
       ],
       next_if_positive: "qualification",
       next_if_objection: "objection_or_interest",
@@ -148,6 +165,7 @@ function defaultFlowRows() {
         "qualified_lead",
         "outbound_callback_later",
         "outbound_send_info",
+        "outbound_not_interested",
       ],
       next_if_positive: "next_step",
       next_if_objection: "objection_or_interest",
@@ -160,7 +178,11 @@ function defaultFlowRows() {
       step_id: "next_step",
       step_name: "next_step",
       goal: "לקדם לשלב הבא או לקבוע חזרה",
-      allowed_intents: ["qualified_lead", "outbound_callback_later"],
+      allowed_intents: [
+        "qualified_lead",
+        "outbound_callback_later",
+        "outbound_send_info",
+      ],
       next_if_positive: "close",
       next_if_objection: "close",
       next_if_negative: "close",
@@ -172,7 +194,11 @@ function defaultFlowRows() {
       step_id: "close",
       step_name: "close",
       goal: "סיום שיחה",
-      allowed_intents: ["outbound_not_interested", "other_general"],
+      allowed_intents: [
+        "outbound_not_interested",
+        "other_general",
+        "outbound_callback_later",
+      ],
       next_if_positive: "close",
       next_if_objection: "close",
       next_if_negative: "close",
@@ -203,10 +229,15 @@ function buildFlowMap(outboundFlowRows) {
   return map;
 }
 
-function intentBucket(intentId) {
-  const id = safeStr(intentId).toLowerCase();
+function intentBucket(intentId, currentStep) {
+  const id = normalizeIntentId(intentId);
+  const step = safeStr(currentStep).toLowerCase();
 
   if (!id) return "negative";
+
+  if (id === "other_general" && (step === "opening" || step === "permission_check")) {
+    return "positive";
+  }
 
   if (
     [
@@ -219,20 +250,22 @@ function intentBucket(intentId) {
     return "positive";
   }
 
-  if (["outbound_already_has_solution", "outbound_gatekeeper"].includes(id)) {
+  if (
+    [
+      "outbound_already_has_solution",
+      "outbound_gatekeeper",
+    ].includes(id)
+  ) {
     return "objection";
-  }
-
-  if (["outbound_callback_later", "outbound_not_now"].includes(id)) {
-    return "negative";
   }
 
   if (
     [
+      "outbound_callback_later",
+      "outbound_not_now",
       "outbound_not_interested",
       "outbound_wrong_person",
       "other_general",
-      "other",
     ].includes(id)
   ) {
     return "negative";
@@ -286,7 +319,7 @@ function getCurrentStepConfig(state) {
 }
 
 function shouldEscalateToQualification(intentId) {
-  const id = safeStr(intentId).toLowerCase();
+  const id = normalizeIntentId(intentId);
   return [
     "qualified_lead",
     "outbound_ask_price",
@@ -306,8 +339,8 @@ function cloneState(state) {
 function advanceOutboundConversationState(state, detectedIntent) {
   const nextState = cloneState(state || {});
   const current = getCurrentStepConfig(nextState);
-  const intentId = safeStr(detectedIntent?.intent_id || detectedIntent).toLowerCase();
-  const bucket = intentBucket(intentId);
+  const intentId = normalizeIntentId(detectedIntent?.intent_id || detectedIntent);
+  const bucket = intentBucket(intentId, current?.step_id);
 
   nextState.last_detected_intent = intentId || null;
   nextState.last_intent_bucket = bucket;
@@ -386,7 +419,6 @@ function buildOutboundStepPrompt(state) {
     `- objection_count=${Number(state?.objection_count || 0)}`,
     `- qualified_candidate=${state?.qualified_candidate ? "true" : "false"}`,
     "- Speak only according to the current step.",
-    "- Do not skip ahead to pricing, full pitch, or closing unless the current step allows it.",
     "- Ask only one question in this turn.",
     "- Keep the turn short and natural.",
   ];
@@ -396,27 +428,24 @@ function buildOutboundStepPrompt(state) {
   }
 
   if (step.step_id === "opening") {
-    lines.push("- In opening, only identify yourself briefly and check whether this is a good time.");
-    lines.push("- Do not explain the product yet unless the customer asks who is calling.");
+    lines.push("- In opening, identify yourself briefly and check whether this is a good time.");
+    lines.push("- If the customer only says hello/yes/who is this, move naturally to the short value hook.");
   }
 
   if (step.step_id === "value_hook") {
     lines.push("- Give only one short value sentence tied to missed calls, leads, appointments, service, or sales.");
-    lines.push("- Do not list features.");
   }
 
   if (step.step_id === "need_discovery") {
-    lines.push("- Ask one short discovery question about current phone handling, missed calls, lead handling, appointments, service load, or sales flow.");
+    lines.push("- Ask one short discovery question.");
   }
 
   if (step.step_id === "micro_pitch") {
-    lines.push("- Connect what the customer said to a short relevant benefit in up to two or three short sentences.");
-    lines.push("- Do not give a broad company overview.");
+    lines.push("- Connect what the customer said to a short relevant benefit in up to two short sentences.");
   }
 
   if (step.step_id === "objection_or_interest") {
     lines.push("- Handle only the single current objection.");
-    lines.push("- Do not argue and do not answer multiple objections together.");
   }
 
   if (step.step_id === "qualification") {
