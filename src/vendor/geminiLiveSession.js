@@ -132,15 +132,16 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
     safeStr(runtimeMeta?.contact_name) ||
     "";
   const callerWithheld = !!runtimeMeta?.caller_withheld;
-  const relevantIntents = callType === "outbound"
-    ? allIntents.filter(
-        (it) =>
-          /^outbound_/i.test(String(it?.intent_id || "")) ||
-          /^(sales|outbound|qualification|objection|callback|lead)$/i.test(
-            String(it?.intent_type || "")
-          )
-      )
-    : allIntents.filter((it) => !/^outbound_/i.test(String(it?.intent_id || "")));
+  const relevantIntents =
+    callType === "outbound"
+      ? allIntents.filter(
+          (it) =>
+            /^outbound_/i.test(String(it?.intent_id || "")) ||
+            /^(sales|outbound|qualification|objection|callback|lead)$/i.test(
+              String(it?.intent_type || "")
+            )
+        )
+      : allIntents.filter((it) => !/^outbound_/i.test(String(it?.intent_id || "")));
 
   const sections = [];
 
@@ -191,6 +192,7 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
         "- Handle inbound calls briefly and naturally.",
         "- Ask only one question at a time.",
         "- If the call is informational, answer briefly and do not force lead capture.",
+        "- Do not use outbound sales framing in inbound calls.",
       ].join("\n")
     );
   }
@@ -199,7 +201,7 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
     sections.push(
       [
         "CALLER MEMORY POLICY:",
-        `- Known caller name: \"${callerName}\"`,
+        `- Known caller name: "${callerName}"`,
         "- Treat it as correct unless the caller explicitly corrects it.",
         "- Do not ask for the name again unless needed.",
       ].join("\n")
@@ -239,12 +241,18 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
     if (prompts[key]) sections.push(`${key}:\n${safeStr(prompts[key])}`);
   }
 
-  if (callType === "outbound" && Array.isArray(ssot?.outbound_script) && ssot.outbound_script.length) {
+  if (
+    callType === "outbound" &&
+    Array.isArray(ssot?.outbound_script) &&
+    ssot.outbound_script.length
+  ) {
     const scriptLines = ssot.outbound_script
       .slice(0, 12)
       .map((row) => {
         const step = safeStr(row.step || row.Step || row.stage || row.name);
-        const desc = safeStr(row.description || row.Description || row.value || row.text);
+        const desc = safeStr(
+          row.description || row.Description || row.value || row.text
+        );
         const ex = safeStr(row.example_text || row.example || row.sample);
         return `- ${step || "step"}: ${desc}${ex ? ` | example: ${ex}` : ""}`.trim();
       })
@@ -256,7 +264,9 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
   const settingsContext = buildSettingsContext(settings);
   if (settingsContext) sections.push(`SETTINGS_CONTEXT:\n${settingsContext}`);
 
-  const intentsContext = buildIntentsContext(relevantIntents.length ? relevantIntents : allIntents);
+  const intentsContext = buildIntentsContext(
+    relevantIntents.length ? relevantIntents : allIntents
+  );
   if (intentsContext) sections.push(`RELEVANT_INTENTS:\n${intentsContext}`);
 
   return sections.filter(Boolean).join("\n\n---\n\n").trim();
@@ -333,10 +343,25 @@ function isIncompleteOutboundUserUtterance(nlp) {
   if (isUnknownOrNoiseUtterance(nlp) && !isGreetingLikeUtterance(nlp)) return true;
   if (isGreetingLikeUtterance(nlp)) return false;
   if (words <= 1 && compact.length <= 8) return true;
-  if (/^(אני|אבל|רגע|שנייה|מה|כן|לא|אה|או\s*קיי|אוקיי|אוקי|תסבירי|תסביר|מי|מאיפה|אז|זה|את|אתם)$/u.test(norm)) return true;
+  if (
+    /^(אני|אבל|רגע|שנייה|מה|כן|לא|אה|או\s*קיי|אוקיי|אוקי|תסבירי|תסביר|מי|מאיפה|אז|זה|את|אתם)$/u.test(
+      norm
+    )
+  )
+    return true;
   if (/^(א ני|א בל|ר גע|ש נייה|מ ה|ת סבירי|מ י|מ איפה)/u.test(norm)) return true;
-  if (/(אני לא|אני כן|אבל אבל|אבל אני|תסבירי לי מה|ספרי לי מה|תסבירי לי|ספרי לי|מי את|מי אתם|מאיפה יש|איך הגעת|איך הגעתם|מה אתם|מה את|את יכולה לעזור|יש לי עסק|איזה עסק)/u.test(norm)) return true;
-  if (/^(אנילא|אניכן|תסבירילימה|תסביריליקצת|ספרילימה|ספריליקצת|מיאת|מיאתם|מאיפהיש|איךהגעת|איךהגעתם|מהאתם|מהאת|אתיכולהלעזור|ישליעסק|איזהעסק)/.test(compact)) return true;
+  if (
+    /(אני לא|אני כן|אבל אבל|אבל אני|תסבירי לי מה|ספרי לי מה|תסבירי לי|ספרי לי|מי את|מי אתם|מאיפה יש|איך הגעת|איך הגעתם|מה אתם|מה את|את יכולה לעזור|יש לי עסק|איזה עסק)/u.test(
+      norm
+    )
+  )
+    return true;
+  if (
+    /^(אנילא|אניכן|תסבירילימה|תסביריליקצת|ספרילימה|ספריליקצת|מיאת|מיאתם|מאיפהיש|איךהגעת|איךהגעתם|מהאתם|מהאת|אתיכולהלעזור|ישליעסק|איזהעסק)/.test(
+      compact
+    )
+  )
+    return true;
   if (/[,:-]$/.test(norm)) return true;
   if (!/[.?!]$/.test(norm) && words <= 4 && compact.length < 22) return true;
   if (/^(או\s*קיי|אוקיי|אוקי|הבנתי|בסדר)\.?$/u.test(norm)) return true;
@@ -359,7 +384,12 @@ function isBadBotFragment(text) {
   if (!norm) return true;
   const compact = compactHeb(norm);
   if (wordCount(norm) <= 1) return true;
-  if (/^(שי|shay|רגע,?\s*אה|אה\.?|הממ+|what.*|human-like|okay\.?|ok\.?|להרבה|maybe|alo|hello|hi|hallo)$/iu.test(norm)) return true;
+  if (
+    /^(שי|shay|רגע,?\s*אה|אה\.?|הממ+|what.*|human-like|okay\.?|ok\.?|להרבה|maybe|alo|hello|hi|hallo)$/iu.test(
+      norm
+    )
+  )
+    return true;
   if (/^[A-Za-z ,.'"?!-]+$/.test(norm)) return true;
   if (compact.length < 8) return true;
   return false;
@@ -373,9 +403,16 @@ function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
   const busyTemplate = safeStr(settings.OUTBOUND_IF_BUSY_TEMPLATE);
   const notRelevantTemplate = safeStr(settings.OUTBOUND_IF_NOT_RELEVANT_TEMPLATE);
   const pricingTemplate = safeStr(settings.OUTBOUND_PRICE_TEMPLATE);
-  const contactName = safeStr(meta?.contact_name) || safeStr(meta?.caller_profile?.display_name);
+  const contactName =
+    safeStr(meta?.contact_name) || safeStr(meta?.caller_profile?.display_name);
 
-  if (intentId === "outbound_slow_down" || /(לא\s*הבנתי|לא\s*שמעתי|מהר\s*מדי|דברי\s*לאט|תסבירי\s*יותר\s*לאט|מדברת\s*מהר|תדברי\s*לאט|מפסיקה\s*לדבר|ממשיכה\s*לדבר)/u.test(norm) || /לאהבנתי|מהרמדי|דברילאט|מדברתלימהר|מפסיקהלדבר|ממשיכהלדבר/.test(compact)) {
+  if (
+    intentId === "outbound_slow_down" ||
+    /(לא\s*הבנתי|לא\s*שמעתי|מהר\s*מדי|דברי\s*לאט|תסבירי\s*יותר\s*לאט|מדברת\s*מהר|תדברי\s*לאט|מפסיקה\s*לדבר|ממשיכה\s*לדבר)/u.test(
+      norm
+    ) ||
+    /לאהבנתי|מהרמדי|דברילאט|מדברתלימהר|מפסיקהלדבר|ממשיכהלדבר/.test(compact)
+  ) {
     return "בטח, אסביר לאט: אנחנו נותנים מענה טלפוני חכם שעונה לשיחות ולוקח פרטים.";
   }
 
@@ -392,8 +429,12 @@ function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
 
   if (
     intentId === "outbound_how_did_you_get_to_me" ||
-    /(איך\s*הגעת|איך\s*הגעתם|מאיפה\s*יש\s*לך\s*את\s*הטלפון|מאיפה\s*יש\s*לכם\s*את\s*המספר)/u.test(norm) ||
-    /איךהגעתאליי|איךהגעתםאליי|מאיפהישלךאתהטלפוןשלי|מאיפהישלכםאתהמספרשלי/.test(compact)
+    /(איך\s*הגעת|איך\s*הגעתם|מאיפה\s*יש\s*לך\s*את\s*הטלפון|מאיפה\s*יש\s*לכם\s*את\s*המספר)/u.test(
+      norm
+    ) ||
+    /איךהגעתאליי|איךהגעתםאליי|מאיפהישלךאתהטלפוןשלי|מאיפהישלכםאתהמספרשלי/.test(
+      compact
+    )
   ) {
     return "המספר הגיע מפרטי קשר עסקיים זמינים, והמטרה היא רק לבדוק אם השירות שלנו רלוונטי לעסק שלך.";
   }
@@ -406,14 +447,18 @@ function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
   ) {
     return (
       pricingTemplate ||
-      "המחיר תלוי בהיקף השיחות ובמה שצריך שהמערכת תעשה, אז בדרך כלל נותנים הצעת מחיר לפי הצורך של העסק."
+      "המחיר תלוי בהיקף השיחות ובמה שצריך שהמערכת תעשה, ובדרך כלל נותנים הצעת מחיר לפי הצורך של העסק."
     );
   }
 
   if (
     intentId === "outbound_what_do_you_offer" ||
-    /(מה\s*אתם\s*מציעים|מה\s*את\s*מציעה|מה\s*אתם\s*יכולים|תסבירי\s*לי|ספרי\s*לי|תספרי\s*לי)/u.test(norm) ||
-    /מהאתםמציעים|מהאתמציעה|מהאתםיכולים|תסבירילימה|ספריליקצת|תספריליקצת/.test(compact)
+    /(מה\s*אתם\s*מציעים|מה\s*את\s*מציעה|מה\s*אתם\s*יכולים|תסבירי\s*לי|ספרי\s*לי|תספרי\s*לי)/u.test(
+      norm
+    ) ||
+    /מהאתםמציעים|מהאתמציעה|מהאתםיכולים|תסבירילימה|ספריליקצת|תספריליקצת/.test(
+      compact
+    )
   ) {
     return "אנחנו נותנים מענה טלפוני חכם לעסקים, כדי לענות לשיחות, לקחת פרטים ולעזור בתיאומים ולידים.";
   }
@@ -456,7 +501,9 @@ function buildScriptedOutboundReply(intent, nlp, meta, ssot) {
   }
 
   if (
-    /(את יכולה לדבר|את יכולה לעזור|מה זה|מה זה אומר|מה את יכולה לעזור|מה את יכולה לעשות)/u.test(norm) ||
+    /(את יכולה לדבר|את יכולה לעזור|מה זה|מה זה אומר|מה את יכולה לעזור|מה את יכולה לעשות)/u.test(
+      norm
+    ) ||
     /אתיכולהלדבר|אתיכולהלעזור|מהזה|מהאתיכולהלעזור/.test(compact)
   ) {
     return "כן, אני יכולה לעזור עם מענה לשיחות, לקיחת פרטים, תיאומים ולידים.";
@@ -613,6 +660,14 @@ class GeminiLiveSession {
     } catch {}
   }
 
+  _isOutbound() {
+    return String(this._call.call_type || "").toLowerCase() === "outbound";
+  }
+
+  _isInbound() {
+    return !this._isOutbound();
+  }
+
   _clearAllTimers() {
     if (this._trBuf.user.timer) {
       clearTimeout(this._trBuf.user.timer);
@@ -671,11 +726,14 @@ class GeminiLiveSession {
     if (this.closed || !this.ready) return;
     if (this._greetingSent || this._skipProactiveOpening) return;
 
-    const isOutbound = String(this._call.call_type || "").toLowerCase() === "outbound";
     const hasPrewarmKey = !!safeStr(this.meta?.prewarm_key);
-    const delayMs = isOutbound && hasPrewarmKey
-      ? Math.max(600, Number(env.MB_PREWARM_OPENING_GRACE_MS || 1200))
-      : 0;
+
+    let delayMs = 0;
+    if (this._isOutbound() && hasPrewarmKey) {
+      delayMs = Math.max(600, Number(env.MB_PREWARM_OPENING_GRACE_MS || 1200));
+    } else {
+      delayMs = 0;
+    }
 
     if (this._openingTimer) clearTimeout(this._openingTimer);
 
@@ -688,6 +746,7 @@ class GeminiLiveSession {
 
     logger.info("Opening dispatch scheduled", {
       ...this.meta,
+      call_type: this._call.call_type,
       delay_ms: delayMs,
       has_prewarm_key: hasPrewarmKey,
     });
@@ -731,7 +790,7 @@ class GeminiLiveSession {
         lead_id: safeStr(this.meta?.lead_id),
       });
 
-      const isOutbound = String(this._call.call_type || "").toLowerCase() === "outbound";
+      const isOutbound = this._isOutbound();
       const ssotPrefix = Number(this.ssot?.settings?.OUTBOUND_VAD_PREFIX_MS || 0);
       const ssotSilence = Number(this.ssot?.settings?.OUTBOUND_VAD_SILENCE_MS || 0);
       const vadPrefix = isOutbound
@@ -869,7 +928,8 @@ class GeminiLiveSession {
     if (this.closed) return;
     const holder = this._trBuf[who];
     if (holder.timer) clearTimeout(holder.timer);
-    const isOutbound = String(this._call?.call_type || "").toLowerCase() === "outbound";
+
+    const isOutbound = this._isOutbound();
     const delay =
       who === "user"
         ? isOutbound
@@ -878,6 +938,7 @@ class GeminiLiveSession {
         : isOutbound
           ? 700
           : Number(env.MB_BOT_UTTERANCE_FLUSH_MS || 900);
+
     holder.timer = setTimeout(() => this._flushTranscript(who), delay);
   }
 
@@ -912,7 +973,7 @@ class GeminiLiveSession {
     const explicitSwitch = detectExplicitLanguageSwitch(
       nlp.raw || nlp.normalized || ""
     );
-    const outboundMode = String(this._call?.call_type || "").toLowerCase() === "outbound";
+    const outboundMode = this._isOutbound();
 
     if (explicitSwitch) {
       this._langState.lockedLanguage = explicitSwitch;
@@ -1009,9 +1070,12 @@ class GeminiLiveSession {
       return;
     }
 
-    if (who === "bot" && String(this._call.call_type || "").toLowerCase() === "outbound") {
+    if (who === "bot" && this._isOutbound()) {
       const norm = safeStr(nlp.normalized || nlp.raw);
-      if ((nlp.lang === "en" && this._langState.lockedLanguage === "he") || isBadBotFragment(norm)) {
+      if (
+        (nlp.lang === "en" && this._langState.lockedLanguage === "he") ||
+        isBadBotFragment(norm)
+      ) {
         logger.info("Ignoring bad bot fragment", {
           ...this.meta,
           text: nlp.raw,
@@ -1026,7 +1090,7 @@ class GeminiLiveSession {
 
     if (who === "user") {
       if (
-        String(this._call.call_type || "").toLowerCase() === "outbound" &&
+        this._isOutbound() &&
         safeStr(this.meta?.spoken_opening) &&
         looksLikeSpokenOpeningEcho(nlp.normalized || nlp.raw, this.meta.spoken_opening)
       ) {
@@ -1042,7 +1106,8 @@ class GeminiLiveSession {
       if (
         dedupNorm &&
         dedupNorm === this._lastAcceptedUserNorm &&
-        Date.now() - this._lastAcceptedUserAt < Math.max(1500, Number(env.MB_DUP_USER_TRANSCRIPT_WINDOW_MS || 2500))
+        Date.now() - this._lastAcceptedUserAt <
+          Math.max(1500, Number(env.MB_DUP_USER_TRANSCRIPT_WINDOW_MS || 2500))
       ) {
         logger.info("Ignoring duplicate user transcript", {
           ...this.meta,
@@ -1054,7 +1119,7 @@ class GeminiLiveSession {
 
       this._applyLanguageDecision(nlp);
 
-      if (String(this._call.call_type || "").toLowerCase() === "outbound") {
+      if (this._isOutbound()) {
         const shouldIgnore = shouldIgnoreOutboundUserUtterance(nlp);
         const isIncomplete = isIncompleteOutboundUserUtterance(nlp);
 
@@ -1134,9 +1199,7 @@ class GeminiLiveSession {
 
           if (found?.name) {
             const normalizedName =
-              String(found.name).trim() === "שאי"
-                ? "שי"
-                : String(found.name).trim();
+              String(found.name).trim() === "שאי" ? "שי" : String(found.name).trim();
 
             const existing = safeStr(this.meta?.caller_profile?.display_name) || "";
 
@@ -1179,7 +1242,7 @@ class GeminiLiveSession {
         intent,
       });
 
-      if (this._maybeHandleOutboundUserTurn(nlp, intent, this._turnSequence)) {
+      if (this._isOutbound() && this._maybeHandleOutboundUserTurn(nlp, intent, this._turnSequence)) {
         return;
       }
     }
@@ -1200,8 +1263,7 @@ class GeminiLiveSession {
         !this._hangupScheduled &&
         isClosingUtterance(botText)
       ) {
-        const callSid =
-          safeStr(this._call?.callSid) || safeStr(this.meta?.callSid);
+        const callSid = safeStr(this._call?.callSid) || safeStr(this.meta?.callSid);
 
         if (callSid) {
           this._hangupScheduled = true;
@@ -1237,28 +1299,34 @@ class GeminiLiveSession {
     if (!this.ws || this.closed || !this.ready) return;
     const finalText = safeStr(text);
     if (!finalText) return;
+
     const msg = {
       clientContent: {
-        turns: [{
-          role: "user",
-          parts: [{
-            text: [
-              "עני עכשיו בדיוק במשפט הבא, בעברית בלבד, בלי להוסיף שום דבר ובלי לתרגם.",
-              "אסור לענות במילה אחת.",
-              finalText,
-            ].join("\n"),
-          }],
-        }],
+        turns: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: [
+                  "עני עכשיו בדיוק במשפט הבא, בעברית בלבד, בלי להוסיף שום דבר ובלי לתרגם.",
+                  "אסור לענות במילה אחת.",
+                  finalText,
+                ].join("\n"),
+              },
+            ],
+          },
+        ],
         turnComplete: true,
       },
     };
+
     try {
       this.ws.send(JSON.stringify(msg));
     } catch {}
   }
 
   _maybeHandleOutboundUserTurn(nlp, intent, turnSeq) {
-    if (String(this._call.call_type || "").toLowerCase() !== "outbound") return false;
+    if (!this._isOutbound()) return false;
     if (turnSeq && turnSeq <= this._lastHandledUserTurn) return true;
     if (Date.now() - this._lastScriptedReplyAt < 900) return true;
     if (shouldIgnoreOutboundUserUtterance(nlp)) return true;
@@ -1284,14 +1352,22 @@ class GeminiLiveSession {
           callType: this._call.call_type,
         });
 
-        if (String(mergedIntent?.intent_id || "") && String(mergedIntent?.intent_id || "") !== "other") {
+        if (
+          String(mergedIntent?.intent_id || "") &&
+          String(mergedIntent?.intent_id || "") !== "other"
+        ) {
           selectedIntent = mergedIntent;
           selectedNlp = mergedNlp;
         }
       }
     }
 
-    const scripted = buildScriptedOutboundReply(selectedIntent, selectedNlp, this.meta, this.ssot);
+    const scripted = buildScriptedOutboundReply(
+      selectedIntent,
+      selectedNlp,
+      this.meta,
+      this.ssot
+    );
     if (!scripted) return false;
 
     this._lastHandledUserTurn = turnSeq || this._turnSequence;
@@ -1349,6 +1425,7 @@ class GeminiLiveSession {
       this.ws.send(JSON.stringify(msg));
       logger.info("Proactive opening sent", {
         ...this.meta,
+        call_type: this._call.call_type,
         greeting: openingPack.greeting,
         opening_len: opening.length,
         language_locked: this._langState.lockedLanguage,
@@ -1403,8 +1480,7 @@ class GeminiLiveSession {
       this._clearAllTimers();
 
       this._call.ended_at = nowIso();
-      const durationMs =
-        Date.now() - new Date(this._call.started_at).getTime();
+      const durationMs = Date.now() - new Date(this._call.started_at).getTime();
 
       const callMeta = {
         callSid: this._call.callSid,
@@ -1427,9 +1503,7 @@ class GeminiLiveSession {
 
       if (this._passiveCtx && passiveCallContext?.finalizeCtx) {
         try {
-          callMeta.passive_context = passiveCallContext.finalizeCtx(
-            this._passiveCtx
-          );
+          callMeta.passive_context = passiveCallContext.finalizeCtx(this._passiveCtx);
         } catch {}
       }
 
