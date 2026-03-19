@@ -26,6 +26,11 @@ const {
   getRecordingForCall,
 } = require("../utils/recordingRegistry");
 const { getCachedOpening } = require("../logic/openingBuilder");
+const {
+  createOutboundConversationState,
+  advanceOutboundConversationState,
+  buildOutboundStepPrompt,
+} = require("../outbound/conversationStateMachine");
 
 let passiveCallContext = null;
 try {
@@ -105,7 +110,7 @@ function buildIntentsContext(intents) {
     const pa = Number(a?.priority ?? 0);
     const pb = Number(b?.priority ?? 0);
     if (pb !== pa) return pb - pa;
-    return String(a?.intent_id ?? "").localeCompare(String(a?.intent_id ?? ""));
+    return String(a?.intent_id ?? "").localeCompare(String(b?.intent_id ?? ""));
   });
 
   return rows
@@ -117,7 +122,17 @@ function buildIntentsContext(intents) {
     .trim();
 }
 
-function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
+function getPromptValue(prompts, key) {
+  if (!prompts) return "";
+  if (!Array.isArray(prompts)) return safeStr(prompts[key]);
+  const row =
+    prompts.find((r) => safeStr(r?.prompt_id) === key) ||
+    prompts.find((r) => safeStr(r?.key) === key) ||
+    prompts.find((r) => safeStr(r?.name) === key);
+  return safeStr(row?.content || row?.prompt_text || row?.value);
+}
+
+function buildSystemInstructionFromSSOT(ssot, runtimeMeta, outboundState = null) {
   const settings = ssot?.settings || {};
   const prompts = ssot?.prompts || {};
   const intents = ssot?.intents || [];
@@ -131,13 +146,14 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
     safeStr(runtimeMeta?.display_name) ||
     "";
   const callerWithheld = !!runtimeMeta?.caller_withheld;
+  const callType = safeStr(runtimeMeta?.call_type || "inbound").toLowerCase();
 
   const sections = [];
 
   sections.push([
     "IDENTITY (NON-NEGOTIABLE):",
     "- You are the business phone assistant defined by SETTINGS and PROMPTS.",
-    "- Never identify as an AI, model, assistant model, or LLM.",
+    "- Never identify as an AI, model, assistant model, or LLM unless the caller directly asks; then say you are a digital representative of the business.",
     "- Speak briefly, naturally, and only as a customer-facing phone representative.",
     "- NEVER output analysis, internal planning, reasoning, markdown, bullets, JSON, stage labels, or notes.",
     "- NEVER say things like 'I understand', 'I will', 'I'm now', 'I've processed', 'composing', 'confirming', or any meta explanation.",
@@ -184,20 +200,52 @@ function buildSystemInstructionFromSSOT(ssot, runtimeMeta) {
     ].join("\n"));
   }
 
-  if (prompts.MASTER_PROMPT) {
-    sections.push(`MASTER_PROMPT:\n${safeStr(prompts.MASTER_PROMPT)}`);
+  const masterPrompt = getPromptValue(prompts, "MASTER_PROMPT");
+  const inboundPrompt = getPromptValue(prompts, "MASTER_PROMPT_INBOUND");
+  const outboundPrompt = getPromptValue(prompts, "MASTER_PROMPT_OUTBOUND");
+  const guardrailsPrompt = getPromptValue(prompts, "GUARDRAILS_PROMPT");
+  const kbPrompt = getPromptValue(prompts, "KB_PROMPT");
+  const leadCapturePrompt = getPromptValue(prompts, "LEAD_CAPTURE_PROMPT");
+  const leadCaptureInbound = getPromptValue(prompts, "LEAD_CAPTURE_PROMPT_INBOUND");
+  const leadCaptureOutbound = getPromptValue(prompts, "LEAD_CAPTURE_PROMPT_OUTBOUND");
+  const intentRouterPrompt = getPromptValue(prompts, "INTENT_ROUTER_PROMPT");
+  const intentRouterOutbound = getPromptValue(prompts, "INTENT_ROUTER_PROMPT_OUTBOUND");
+  const objectionPrompt = getPromptValue(prompts, "OBJECTION_HANDLING_PROMPT");
+  const callbackPrompt = getPromptValue(prompts, "CALLBACK_CAPTURE_PROMPT");
+  const closingPrompt = getPromptValue(prompts, "CLOSING_PROMPT");
+  const qualificationPrompt = getPromptValue(prompts, "OUTBOUND_QUALIFICATION_PROMPT");
+
+  if (masterPrompt) sections.push(`MASTER_PROMPT:\n${masterPrompt}`);
+  if (callType === "outbound" && outboundPrompt) {
+    sections.push(`MASTER_PROMPT_OUTBOUND:\n${outboundPrompt}`);
+  } else if (callType !== "outbound" && inboundPrompt) {
+    sections.push(`MASTER_PROMPT_INBOUND:\n${inboundPrompt}`);
   }
-  if (prompts.GUARDRAILS_PROMPT) {
-    sections.push(`GUARDRAILS_PROMPT:\n${safeStr(prompts.GUARDRAILS_PROMPT)}`);
+
+  if (guardrailsPrompt) sections.push(`GUARDRAILS_PROMPT:\n${guardrailsPrompt}`);
+  if (kbPrompt) sections.push(`KB_PROMPT:\n${kbPrompt}`);
+  if (leadCapturePrompt) sections.push(`LEAD_CAPTURE_PROMPT:\n${leadCapturePrompt}`);
+  if (callType === "outbound" && leadCaptureOutbound) {
+    sections.push(`LEAD_CAPTURE_PROMPT_OUTBOUND:\n${leadCaptureOutbound}`);
+  } else if (callType !== "outbound" && leadCaptureInbound) {
+    sections.push(`LEAD_CAPTURE_PROMPT_INBOUND:\n${leadCaptureInbound}`);
   }
-  if (prompts.KB_PROMPT) {
-    sections.push(`KB_PROMPT:\n${safeStr(prompts.KB_PROMPT)}`);
+  if (intentRouterPrompt) sections.push(`INTENT_ROUTER_PROMPT:\n${intentRouterPrompt}`);
+  if (callType === "outbound" && intentRouterOutbound) {
+    sections.push(`INTENT_ROUTER_PROMPT_OUTBOUND:\n${intentRouterOutbound}`);
   }
-  if (prompts.LEAD_CAPTURE_PROMPT) {
-    sections.push(`LEAD_CAPTURE_PROMPT:\n${safeStr(prompts.LEAD_CAPTURE_PROMPT)}`);
+  if (callType === "outbound" && objectionPrompt) {
+    sections.push(`OBJECTION_HANDLING_PROMPT:\n${objectionPrompt}`);
   }
-  if (prompts.INTENT_ROUTER_PROMPT) {
-    sections.push(`INTENT_ROUTER_PROMPT:\n${safeStr(prompts.INTENT_ROUTER_PROMPT)}`);
+  if (callbackPrompt) sections.push(`CALLBACK_CAPTURE_PROMPT:\n${callbackPrompt}`);
+  if (closingPrompt) sections.push(`CLOSING_PROMPT:\n${closingPrompt}`);
+  if (callType === "outbound" && qualificationPrompt) {
+    sections.push(`OUTBOUND_QUALIFICATION_PROMPT:\n${qualificationPrompt}`);
+  }
+
+  if (callType === "outbound" && outboundState) {
+    const stepPrompt = buildOutboundStepPrompt(outboundState);
+    if (stepPrompt) sections.push(stepPrompt);
   }
 
   const settingsContext = buildSettingsContext(settings);
@@ -214,7 +262,7 @@ function looksLikeReasoningText(text) {
   if (!t) return false;
   return (
     /\*\*.+\*\*/.test(t) ||
-    /\b(Composing the Response|Confirming|Implementing|Addressing|Gathering|Finalizing|Prioritizing|Initiating|Acknowledge|Pinpointing|Reasoning|I(?:'| a)m now|I've|I have successfully|I will now|The user is asking|triggering the|based on the context|SETTINGS_CONTEXT|OPENING_SCRIPT|INTENT_ROUTER_PROMPT|LEAD_CAPTURE_PROMPT)\b/i.test(
+    /\b(Composing the Response|Confirming|Implementing|Addressing|Gathering|Finalizing|Prioritizing|Initiating|Acknowledge|Pinpointing|Reasoning|I(?:'| a)m now|I've|I have successfully|I will now|The user is asking|triggering the|based on the context|SETTINGS_CONTEXT|OPENING_SCRIPT|INTENT_ROUTER_PROMPT|LEAD_CAPTURE_PROMPT|OUTBOUND_STEP_POLICY)\b/i.test(
       t
     )
   );
@@ -266,6 +314,8 @@ class GeminiLiveSession {
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
     this._closingSentAfterCallback = false;
+    this._lastStepSteeringAt = 0;
+    this._lastStepSteeringKey = "";
 
     this._langState = {
       lockedLanguage: safeStr(env.MB_DEFAULT_LANGUAGE) || "he",
@@ -288,7 +338,7 @@ class GeminiLiveSession {
       callSid: safeStr(this.meta?.callSid),
       streamSid: safeStr(this.meta?.streamSid),
       source: safeStr(this.meta?.source) || "Mr.Bot",
-      call_type: safeStr(this.meta?.call_type) || 'inbound',
+      call_type: safeStr(this.meta?.call_type) || "inbound",
       lead_id: safeStr(this.meta?.lead_id),
       campaign_id: safeStr(this.meta?.campaign_id),
       contact_name: safeStr(this.meta?.contact_name),
@@ -301,12 +351,17 @@ class GeminiLiveSession {
       conversationLog: [],
       recording_sid: "",
       finalized: false,
-      call_type: safeStr(this.meta?.call_type) || 'inbound',
-      lead_id: safeStr(this.meta?.lead_id),
-      campaign_id: safeStr(this.meta?.campaign_id),
-      contact_name: safeStr(this.meta?.contact_name),
-      business_name: safeStr(this.meta?.business_name),
+      outbound_state: null,
     };
+
+    if (this._call.call_type === "outbound") {
+      this._call.outbound_state = createOutboundConversationState(this.ssot, {
+        lead_id: this._call.lead_id,
+        campaign_id: this._call.campaign_id,
+        contact_name: this._call.contact_name,
+        business_name: this._call.business_name,
+      });
+    }
 
     this._passiveCtx = null;
     try {
@@ -350,16 +405,20 @@ class GeminiLiveSession {
       const callerProfile = this.meta?.caller_profile || null;
       const callerName = safeStr(callerProfile?.display_name) || "";
 
-      const systemText = buildSystemInstructionFromSSOT(this.ssot, {
-        caller_name: callerName,
-        display_name: callerName,
-        language_locked: this._langState.lockedLanguage,
-        caller_withheld: this._call.caller_withheld,
-        call_type: safeStr(this.meta?.call_type) || 'inbound',
-        contact_name: safeStr(this.meta?.contact_name),
-        business_name: safeStr(this.meta?.business_name),
-        lead_id: safeStr(this.meta?.lead_id),
-      });
+      const systemText = buildSystemInstructionFromSSOT(
+        this.ssot,
+        {
+          caller_name: callerName,
+          display_name: callerName,
+          language_locked: this._langState.lockedLanguage,
+          caller_withheld: this._call.caller_withheld,
+          call_type: this._call.call_type,
+          contact_name: this._call.contact_name,
+          business_name: this._call.business_name,
+          lead_id: this._call.lead_id,
+        },
+        this._call.outbound_state
+      );
 
       const vadPrefix = clampNum(env.MB_VAD_PREFIX_MS ?? 40, 20, 600, 40);
       const vadSilence = clampNum(env.MB_VAD_SILENCE_MS ?? 120, 80, 1500, 120);
@@ -590,6 +649,63 @@ class GeminiLiveSession {
     }
   }
 
+  _sendOutboundStepSteering(nlp, detectedIntent, transition) {
+    if (!this.ws || this.closed || !this.ready) return;
+    if (this._call.call_type !== "outbound") return;
+    if (!this._call.outbound_state) return;
+
+    const prompt = buildOutboundStepPrompt(this._call.outbound_state);
+    if (!prompt) return;
+
+    const currentStep = safeStr(this._call.outbound_state.current_step);
+    const intentId = safeStr(detectedIntent?.intent_id || detectedIntent || "other_general");
+    const key = `${currentStep}|${intentId}|${safeStr(nlp?.normalized || nlp?.raw)}`;
+    const now = Date.now();
+
+    if (this._lastStepSteeringKey === key && now - this._lastStepSteeringAt < 1200) {
+      return;
+    }
+
+    this._lastStepSteeringKey = key;
+    this._lastStepSteeringAt = now;
+
+    const steeringText = [
+      "INTERNAL OUTBOUND STEP UPDATE. DO NOT SAY THIS OUT LOUD.",
+      prompt,
+      `last_customer_text=${safeStr(nlp?.normalized || nlp?.raw)}`,
+      `last_detected_intent=${intentId}`,
+      `transition_allowed=${transition?.allowed ? "true" : "false"}`,
+      `transition_reason=${safeStr(transition?.reason)}`,
+      `intent_bucket=${safeStr(transition?.bucket)}`,
+      "Respond to the customer naturally according to the current step only.",
+      "Do not mention step names, intents, rules, or internal logic.",
+      "Output only the customer-facing sentence(s) in Hebrew unless language policy says otherwise.",
+    ].join("\n");
+
+    const msg = {
+      clientContent: {
+        turns: [{ role: "user", parts: [{ text: steeringText }] }],
+        turnComplete: true,
+      },
+    };
+
+    try {
+      this.ws.send(JSON.stringify(msg));
+      logger.info("OUTBOUND_STEP_STEERING_SENT", {
+        ...this.meta,
+        current_step: currentStep,
+        intent_id: intentId,
+        transition_allowed: !!transition?.allowed,
+        transition_reason: safeStr(transition?.reason),
+      });
+    } catch (e) {
+      logger.debug("Failed sending outbound step steering", {
+        ...this.meta,
+        error: e.message,
+      });
+    }
+  }
+
   _flushTranscript(who) {
     if (!env.MB_LOG_TRANSCRIPTS) return;
 
@@ -705,6 +821,28 @@ class GeminiLiveSession {
         language_locked: this._langState.lockedLanguage,
         intent,
       });
+
+      if (this._call.call_type === "outbound" && this._call.outbound_state) {
+        const transition = advanceOutboundConversationState(
+          this._call.outbound_state,
+          intent
+        );
+        this._call.outbound_state = transition.state;
+
+        logger.info("OUTBOUND_STEP_TRANSITION", {
+          ...this.meta,
+          detected_intent: safeStr(intent?.intent_id),
+          current_step: safeStr(transition.current_step),
+          next_step: safeStr(transition.next_step),
+          allowed: !!transition.allowed,
+          reason: safeStr(transition.reason),
+          bucket: safeStr(transition.bucket),
+          objection_count: Number(this._call.outbound_state?.objection_count || 0),
+          qualified_candidate: !!this._call.outbound_state?.qualified_candidate,
+        });
+
+        this._sendOutboundStepSteering(nlp, intent, transition);
+      }
     }
 
     if (who === "bot") {
@@ -770,9 +908,9 @@ class GeminiLiveSession {
       ssot: this.ssot,
       callerName: callerName || safeStr(this.meta?.contact_name),
       isReturning,
-      timeZone: env.TIME_ZONE || 'Asia/Jerusalem',
+      timeZone: env.TIME_ZONE || "Asia/Jerusalem",
       ttlMs: Number(env.MB_OPENING_CACHE_TTL_MS || 300000),
-      callType: safeStr(this.meta?.call_type) || 'inbound',
+      callType: safeStr(this.meta?.call_type) || "inbound",
       businessName: safeStr(this.meta?.business_name),
     });
 
@@ -799,6 +937,7 @@ class GeminiLiveSession {
         opening_len: opening.length,
         language_locked: this._langState.lockedLanguage,
         opening_cache_hit: openingPack.cache_hit,
+        current_step: safeStr(this._call?.outbound_state?.current_step),
       });
     } catch (e) {
       logger.debug("Failed sending proactive opening", {
@@ -862,11 +1001,12 @@ class GeminiLiveSession {
         caller_withheld: this._call.caller_withheld,
         finalize_reason: reason || "",
         language_locked: this._langState.lockedLanguage,
-        call_type: this._call.call_type || safeStr(this.meta?.call_type) || 'inbound',
+        call_type: this._call.call_type || safeStr(this.meta?.call_type) || "inbound",
         lead_id: this._call.lead_id || safeStr(this.meta?.lead_id),
         campaign_id: this._call.campaign_id || safeStr(this.meta?.campaign_id),
         contact_name: this._call.contact_name || safeStr(this.meta?.contact_name),
         business_name: this._call.business_name || safeStr(this.meta?.business_name),
+        outbound_state: this._call.outbound_state || null,
       };
 
       if (this._passiveCtx && passiveCallContext?.finalizeCtx) {
