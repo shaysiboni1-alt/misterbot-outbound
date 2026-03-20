@@ -8,6 +8,7 @@ const { GeminiLiveSession } = require("../vendor/geminiLiveSession");
 const { startCallRecording } = require("../utils/twilioRecordings");
 const { setRecordingForCall } = require("../utils/recordingRegistry");
 const { getSSOT } = require("../ssot/ssotClient");
+const { mark, setMeta } = require("../utils/callTiming");
 
 const { getCallerProfile } = require("../memory/callerMemory");
 
@@ -56,6 +57,13 @@ function installTwilioMediaWs(server) {
         streamSid = msg?.start?.streamSid || null;
         callSid = msg?.start?.callSid || null;
         customParameters = msg?.start?.customParameters || {};
+        mark(callSid, streamSid, "twilio_stream_start", {
+          lead_id: customParameters?.lead_id || "",
+          contact_name: customParameters?.contact_name || "",
+          business_name: customParameters?.business_name || "",
+          source: customParameters?.source || "",
+          call_type: customParameters?.call_type || "",
+        });
         logger.info("Twilio stream start", { streamSid, callSid, customParameters });
 
         // Start Twilio call recording early so a RecordingSid exists by the time we finalize.
@@ -97,6 +105,17 @@ function installTwilioMediaWs(server) {
           business_name: customParameters?.business_name || '',
         };
 
+        setMeta(callSid, streamSid, {
+          caller: meta.caller || '',
+          called: meta.called || '',
+          source: meta.source || '',
+          call_type: meta.call_type || '',
+          lead_id: meta.lead_id || '',
+          campaign_id: meta.campaign_id || '',
+          contact_name: meta.contact_name || '',
+          business_name: meta.business_name || '',
+        });
+
         // Best-effort caller recognition. No impact on lead parsing.
         try {
           const prof = await getCallerProfile(meta.caller);
@@ -126,6 +145,7 @@ function installTwilioMediaWs(server) {
       }
 
       if (ev === "stop") {
+        mark(callSid, streamSid, "call_closed");
         logger.info("Twilio stream stop", { streamSid, callSid });
         if (!stopped && gemini) {
           stopped = true;
@@ -141,6 +161,7 @@ function installTwilioMediaWs(server) {
     });
 
     twilioWs.on("close", () => {
+      mark(callSid, streamSid, "call_closed");
       logger.info("Twilio media WS closed", { streamSid, callSid });
       if (!stopped && gemini) {
         stopped = true;
@@ -149,6 +170,7 @@ function installTwilioMediaWs(server) {
     });
 
     twilioWs.on("error", (err) => {
+      mark(callSid, streamSid, "call_closed");
       logger.error("Twilio media WS error", { streamSid, callSid, error: err.message });
       if (!stopped && gemini) {
         stopped = true;

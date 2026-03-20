@@ -15,17 +15,10 @@ const {
 const { extractCallerName } = require("../logic/nameExtractor");
 const { finalizePipeline } = require("../stage4/finalizePipeline");
 const { updateCallerDisplayName } = require("../memory/callerMemory");
-const {
-  startCallRecording,
-  publicRecordingUrl,
-  hangupCall,
-} = require("../utils/twilioRecordings");
-const {
-  setRecordingForCall,
-  waitForRecording,
-  getRecordingForCall,
-} = require("../utils/recordingRegistry");
+const { publicRecordingUrl, hangupCall } = require("../utils/twilioRecordings");
+const { waitForRecording, getRecordingForCall } = require("../utils/recordingRegistry");
 const { getCachedOpening } = require("../logic/openingBuilder");
+const { mark, consumeSummary } = require("../utils/callTiming");
 const {
   createOutboundConversationState,
   advanceOutboundConversationState,
@@ -404,22 +397,7 @@ class GeminiLiveSession {
 
     this.ws.on("open", async () => {
       logger.info("Gemini Live WS connected", this.meta);
-
-      try {
-        const r = await startCallRecording(this._call.callSid, logger);
-        if (r?.ok && r.recordingSid) {
-          this._call.recording_sid = String(r.recordingSid);
-          setRecordingForCall(this._call.callSid, {
-            recordingSid: this._call.recording_sid,
-          });
-          logger.info("Recording started + stored in registry", {
-            callSid: this._call.callSid,
-            recordingSid: this._call.recording_sid,
-          });
-        }
-      } catch (e) {
-        logger.warn("startCallRecording failed", { err: String(e) });
-      }
+      mark(this._call.callSid, this._call.streamSid, "gemini_ws_open");
 
       const callerProfile = this.meta?.caller_profile || null;
       const callerName = safeStr(callerProfile?.display_name) || "";
@@ -748,6 +726,9 @@ class GeminiLiveSession {
       lang_confidence: nlp.lang_confidence,
     });
 
+    if (who === "user") mark(this._call.callSid, this._call.streamSid, "first_user_utterance");
+    if (who === "bot") mark(this._call.callSid, this._call.streamSid, "first_bot_utterance");
+
     if (who === "user") {
       try {
         const callerId = safeStr(this.meta?.caller) || "";
@@ -940,6 +921,7 @@ class GeminiLiveSession {
 
     try {
       this.ws.send(JSON.stringify(msg));
+      mark(this._call.callSid, this._call.streamSid, "opening_sent");
       logger.info("Proactive opening sent", {
         ...this.meta,
         greeting: openingPack.greeting,
@@ -1028,6 +1010,15 @@ class GeminiLiveSession {
             this._passiveCtx
           );
         } catch {}
+      }
+
+      const timingSummary = consumeSummary(this._call.callSid, this._call.streamSid);
+      if (timingSummary) {
+        logger.info("CALL_TIMING_SUMMARY", {
+          callSid: this._call.callSid,
+          streamSid: this._call.streamSid,
+          ...timingSummary.metrics,
+        });
       }
 
       const snapshot = {
