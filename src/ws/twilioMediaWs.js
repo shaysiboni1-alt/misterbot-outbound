@@ -12,6 +12,106 @@ const { mark, setMeta } = require("../utils/callTiming");
 
 const { getCallerProfile } = require("../memory/callerMemory");
 
+function b64ToBuf(b64) {
+  try {
+    return Buffer.from(String(b64 || ""), "base64");
+  } catch {
+    return Buffer.alloc(0);
+  }
+}
+
+function bufToB64(buf) {
+  return Buffer.from(buf || Buffer.alloc(0)).toString("base64");
+}
+
+function createTwilioAudioSender({ twilioWs, getStreamSid, getCallSid }) {
+  const FIRST_PACKET_BYTES = 160; // ~20ms @ 8k ulaw
+  const NORMAL_PACKET_BYTES = 640;
+
+  let firstMediaSent = false;
+  let queue = [];
+  let flushing = false;
+
+  function sendPacket(packetBuf, reason) {
+    const streamSid = getStreamSid();
+    const callSid = getCallSid();
+    if (!streamSid || !packetBuf?.length) return false;
+
+    const payload = {
+      event: "media",
+      streamSid,
+      media: { payload: bufToB64(packetBuf) },
+    };
+
+    try {
+      twilioWs.send(JSON.stringify(payload));
+      const markMeta = {
+        first_packet_bytes: packetBuf.length,
+        reason,
+      };
+      mark(callSid, streamSid, "first_twilio_media_sent", markMeta);
+      if (!firstMediaSent) {
+        firstMediaSent = true;
+        logger.info("FIRST_TWILIO_MEDIA_SENT", {
+          callSid,
+          streamSid,
+          bytes: packetBuf.length,
+          reason,
+          queued_packets_after_send: queue.length,
+        });
+      }
+      return true;
+    } catch (error) {
+      logger.debug("Failed sending Twilio media packet", {
+        callSid,
+        streamSid,
+        error: error?.message || String(error),
+      });
+      return false;
+    }
+  }
+
+  function flushQueue() {
+    if (flushing) return;
+    flushing = true;
+    try {
+      while (queue.length) {
+        const packet = queue.shift();
+        if (!sendPacket(packet, "queued")) break;
+      }
+    } finally {
+      flushing = false;
+    }
+  }
+
+  return function sendUlawToTwilio(ulaw8kB64) {
+    const ulawBuf = b64ToBuf(ulaw8kB64);
+    if (!ulawBuf.length) return;
+
+    if (!firstMediaSent) {
+      const firstPacket = ulawBuf.subarray(0, Math.min(FIRST_PACKET_BYTES, ulawBuf.length));
+      const rest = ulawBuf.subarray(firstPacket.length);
+      sendPacket(firstPacket, "first_packet_fast_path");
+      for (let offset = 0; offset < rest.length; offset += NORMAL_PACKET_BYTES) {
+        queue.push(rest.subarray(offset, Math.min(offset + NORMAL_PACKET_BYTES, rest.length)));
+      }
+      if (queue.length) setImmediate(flushQueue);
+      return;
+    }
+
+    if (ulawBuf.length <= NORMAL_PACKET_BYTES) {
+      queue.push(ulawBuf);
+    } else {
+      for (let offset = 0; offset < ulawBuf.length; offset += NORMAL_PACKET_BYTES) {
+        queue.push(ulawBuf.subarray(offset, Math.min(offset + NORMAL_PACKET_BYTES, ulawBuf.length)));
+      }
+    }
+
+    setImmediate(flushQueue);
+  };
+}
+
+
 function installTwilioMediaWs(server) {
   const wss = new WebSocket.Server({ noServer: true });
 
@@ -30,17 +130,11 @@ function installTwilioMediaWs(server) {
 
     let stopped = false;
 
-    function sendToTwilioMedia(ulaw8kB64) {
-      if (!streamSid) return;
-      const payload = {
-        event: "media",
-        streamSid,
-        media: { payload: ulaw8kB64 },
-      };
-      try {
-        twilioWs.send(JSON.stringify(payload));
-      } catch {}
-    }
+    const sendToTwilioMedia = createTwilioAudioSender({
+      twilioWs,
+      getStreamSid: () => streamSid,
+      getCallSid: () => callSid,
+    });
 
     // NOTE: must be async because we may await caller-memory lookups (Postgres).
     twilioWs.on("message", async (data) => {

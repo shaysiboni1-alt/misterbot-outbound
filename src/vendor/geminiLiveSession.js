@@ -492,6 +492,7 @@ class GeminiLiveSession {
             inline?.data &&
             String(inline?.mimeType || "").startsWith("audio/pcm")
           ) {
+            mark(this._call.callSid, this._call.streamSid, "first_gemini_audio_chunk");
             const ulawB64 = pcm24kB64ToUlaw8kB64(inline.data);
             if (ulawB64 && this.onGeminiAudioUlaw8kBase64) {
               this.onGeminiAudioUlaw8kBase64(ulawB64);
