@@ -1,6 +1,8 @@
 "use strict";
 
 const { env } = require("../config/env");
+const { getSSOT } = require("../ssot/ssotClient");
+const { preparePrewarmedOpening } = require("./firstTurnController");
 
 function authHeader() {
   const token = Buffer.from(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`).toString("base64");
@@ -18,11 +20,26 @@ function buildOutboundVoiceUrl(query) {
 
 async function createOutboundCall({ to, lead }) {
   const statusCallback = (env.TWILIO_STATUS_CALLBACK_URL || `${env.PUBLIC_BASE_URL}/twilio/status`).trim();
+
+  let prewarmKey = "";
+  try {
+    const ssot = getSSOT();
+    const prewarm = preparePrewarmedOpening({
+      lead,
+      ssot,
+      callType: "outbound",
+    });
+    prewarmKey = String(prewarm?.prewarmKey || "").trim();
+  } catch (e) {
+    prewarmKey = "";
+  }
+
   const voiceUrl = buildOutboundVoiceUrl({
     lead_id: lead.lead_id,
     contact_name: lead.contact_name,
     business_name: lead.business_name,
     campaign_id: lead.campaign_id,
+    prewarm_key: prewarmKey,
   });
   const form = new URLSearchParams();
   form.set("To", to);

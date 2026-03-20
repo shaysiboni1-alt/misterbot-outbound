@@ -9,108 +9,15 @@ const { startCallRecording } = require("../utils/twilioRecordings");
 const { setRecordingForCall } = require("../utils/recordingRegistry");
 const { getSSOT } = require("../ssot/ssotClient");
 const { mark, setMeta } = require("../utils/callTiming");
+const {
+  getPrewarmEntry,
+  waitForPrewarmReady,
+  setPrewarmCallSid,
+  markPrewarmAttached,
+  deletePrewarmEntry,
+} = require("../outbound/prewarmStore");
 
 const { getCallerProfile } = require("../memory/callerMemory");
-
-function b64ToBuf(b64) {
-  try {
-    return Buffer.from(String(b64 || ""), "base64");
-  } catch {
-    return Buffer.alloc(0);
-  }
-}
-
-function bufToB64(buf) {
-  return Buffer.from(buf || Buffer.alloc(0)).toString("base64");
-}
-
-function createTwilioAudioSender({ twilioWs, getStreamSid, getCallSid }) {
-  const FIRST_PACKET_BYTES = 160; // ~20ms @ 8k ulaw
-  const NORMAL_PACKET_BYTES = 640;
-
-  let firstMediaSent = false;
-  let queue = [];
-  let flushing = false;
-
-  function sendPacket(packetBuf, reason) {
-    const streamSid = getStreamSid();
-    const callSid = getCallSid();
-    if (!streamSid || !packetBuf?.length) return false;
-
-    const payload = {
-      event: "media",
-      streamSid,
-      media: { payload: bufToB64(packetBuf) },
-    };
-
-    try {
-      twilioWs.send(JSON.stringify(payload));
-      const markMeta = {
-        first_packet_bytes: packetBuf.length,
-        reason,
-      };
-      mark(callSid, streamSid, "first_twilio_media_sent", markMeta);
-      if (!firstMediaSent) {
-        firstMediaSent = true;
-        logger.info("FIRST_TWILIO_MEDIA_SENT", {
-          callSid,
-          streamSid,
-          bytes: packetBuf.length,
-          reason,
-          queued_packets_after_send: queue.length,
-        });
-      }
-      return true;
-    } catch (error) {
-      logger.debug("Failed sending Twilio media packet", {
-        callSid,
-        streamSid,
-        error: error?.message || String(error),
-      });
-      return false;
-    }
-  }
-
-  function flushQueue() {
-    if (flushing) return;
-    flushing = true;
-    try {
-      while (queue.length) {
-        const packet = queue.shift();
-        if (!sendPacket(packet, "queued")) break;
-      }
-    } finally {
-      flushing = false;
-    }
-  }
-
-  return function sendUlawToTwilio(ulaw8kB64) {
-    const ulawBuf = b64ToBuf(ulaw8kB64);
-    if (!ulawBuf.length) return;
-
-    if (!firstMediaSent) {
-      const firstPacket = ulawBuf.subarray(0, Math.min(FIRST_PACKET_BYTES, ulawBuf.length));
-      const rest = ulawBuf.subarray(firstPacket.length);
-      sendPacket(firstPacket, "first_packet_fast_path");
-      for (let offset = 0; offset < rest.length; offset += NORMAL_PACKET_BYTES) {
-        queue.push(rest.subarray(offset, Math.min(offset + NORMAL_PACKET_BYTES, rest.length)));
-      }
-      if (queue.length) setImmediate(flushQueue);
-      return;
-    }
-
-    if (ulawBuf.length <= NORMAL_PACKET_BYTES) {
-      queue.push(ulawBuf);
-    } else {
-      for (let offset = 0; offset < ulawBuf.length; offset += NORMAL_PACKET_BYTES) {
-        queue.push(ulawBuf.subarray(offset, Math.min(offset + NORMAL_PACKET_BYTES, ulawBuf.length)));
-      }
-    }
-
-    setImmediate(flushQueue);
-  };
-}
-
 
 function installTwilioMediaWs(server) {
   const wss = new WebSocket.Server({ noServer: true });
@@ -129,12 +36,29 @@ function installTwilioMediaWs(server) {
     let gemini = null;
 
     let stopped = false;
+    let firstTwilioMediaSent = false;
 
-    const sendToTwilioMedia = createTwilioAudioSender({
-      twilioWs,
-      getStreamSid: () => streamSid,
-      getCallSid: () => callSid,
-    });
+    function sendToTwilioMedia(ulaw8kB64, reason = "gemini") {
+      if (!streamSid) return;
+      const payload = {
+        event: "media",
+        streamSid,
+        media: { payload: ulaw8kB64 },
+      };
+      try {
+        twilioWs.send(JSON.stringify(payload));
+        if (!firstTwilioMediaSent) {
+          firstTwilioMediaSent = true;
+          mark(callSid, streamSid, "first_twilio_media_sent");
+          logger.info("FIRST_TWILIO_MEDIA_SENT", {
+            callSid,
+            streamSid,
+            bytes: Buffer.from(String(ulaw8kB64 || ""), "base64").length,
+            reason,
+          });
+        }
+      } catch {}
+    }
 
     // NOTE: must be async because we may await caller-memory lookups (Postgres).
     twilioWs.on("message", async (data) => {
@@ -186,6 +110,10 @@ function installTwilioMediaWs(server) {
 
         const ssot = getSSOT(); // already loaded; if empty do not break voice
 
+        const prewarmKey = String(customParameters?.prewarm_key || "").trim();
+        let prewarmedOpeningText = "";
+        let skipProactiveOpening = false;
+
         const meta = {
           streamSid,
           callSid,
@@ -208,7 +136,46 @@ function installTwilioMediaWs(server) {
           campaign_id: meta.campaign_id || '',
           contact_name: meta.contact_name || '',
           business_name: meta.business_name || '',
+          prewarm_key: prewarmKey || '',
         });
+
+        if (prewarmKey) {
+          try {
+            setPrewarmCallSid(prewarmKey, callSid);
+            const ready = await waitForPrewarmReady(prewarmKey, 1800, 20);
+            if (ready?.ready && Array.isArray(ready.openingAudioChunks) && ready.openingAudioChunks.length) {
+              prewarmedOpeningText = String(ready.openingText || "").trim();
+              skipProactiveOpening = true;
+              mark(callSid, streamSid, "opening_sent");
+              for (const chunk of ready.openingAudioChunks) {
+                sendToTwilioMedia(chunk, "prewarmed_opening");
+              }
+              markPrewarmAttached(prewarmKey);
+              logger.info("Prewarmed opening attached", {
+                callSid,
+                streamSid,
+                prewarm_key: prewarmKey,
+                chunks: ready.openingAudioChunks.length,
+                opening_len: prewarmedOpeningText.length,
+              });
+            } else {
+              logger.info("Prewarmed opening unavailable", {
+                callSid,
+                streamSid,
+                prewarm_key: prewarmKey,
+                ready: !!ready?.ready,
+                failed: !!ready?.failed,
+              });
+            }
+          } catch (e) {
+            logger.warn("Failed attaching prewarmed opening", {
+              callSid,
+              streamSid,
+              prewarm_key: prewarmKey,
+              error: e?.message || String(e),
+            });
+          }
+        }
 
         // Best-effort caller recognition. No impact on lead parsing.
         try {
@@ -221,7 +188,9 @@ function installTwilioMediaWs(server) {
         gemini = new GeminiLiveSession({
           meta,
           ssot,
-          onGeminiAudioUlaw8kBase64: (ulawB64) => sendToTwilioMedia(ulawB64),
+          skipProactiveOpening,
+          openingAlreadyPlayedText: prewarmedOpeningText,
+          onGeminiAudioUlaw8kBase64: (ulawB64) => sendToTwilioMedia(ulawB64, "gemini"),
           onGeminiText: (t) => logger.debug("Gemini text", { streamSid, callSid, t }),
           onTranscript: ({ who, text }) => {
             logger.info(`TRANSCRIPT ${who}`, { streamSid, callSid, text });
@@ -241,6 +210,9 @@ function installTwilioMediaWs(server) {
       if (ev === "stop") {
         mark(callSid, streamSid, "call_closed");
         logger.info("Twilio stream stop", { streamSid, callSid });
+        if (customParameters?.prewarm_key) {
+          deletePrewarmEntry(customParameters.prewarm_key);
+        }
         if (!stopped && gemini) {
           stopped = true;
           gemini.endInput();
@@ -257,6 +229,9 @@ function installTwilioMediaWs(server) {
     twilioWs.on("close", () => {
       mark(callSid, streamSid, "call_closed");
       logger.info("Twilio media WS closed", { streamSid, callSid });
+      if (customParameters?.prewarm_key) {
+        deletePrewarmEntry(customParameters.prewarm_key);
+      }
       if (!stopped && gemini) {
         stopped = true;
         gemini.stop();
@@ -266,6 +241,9 @@ function installTwilioMediaWs(server) {
     twilioWs.on("error", (err) => {
       mark(callSid, streamSid, "call_closed");
       logger.error("Twilio media WS error", { streamSid, callSid, error: err.message });
+      if (customParameters?.prewarm_key) {
+        deletePrewarmEntry(customParameters.prewarm_key);
+      }
       if (!stopped && gemini) {
         stopped = true;
         gemini.stop();

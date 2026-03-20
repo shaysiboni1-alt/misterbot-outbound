@@ -313,7 +313,7 @@ async function deliverWebhook(url, payload, label) {
 }
 
 class GeminiLiveSession {
-  constructor({ onGeminiAudioUlaw8kBase64, onGeminiText, onTranscript, meta, ssot }) {
+  constructor({ onGeminiAudioUlaw8kBase64, onGeminiText, onTranscript, meta, ssot, skipProactiveOpening = false, openingAlreadyPlayedText = "" }) {
     this.onGeminiAudioUlaw8kBase64 = onGeminiAudioUlaw8kBase64;
     this.onGeminiText = onGeminiText;
     this.onTranscript = onTranscript;
@@ -323,8 +323,10 @@ class GeminiLiveSession {
     this.ws = null;
     this.ready = false;
     this.closed = false;
-    this._greetingSent = false;
+    this._greetingSent = !!skipProactiveOpening;
     this._openingKickoffTimer = null;
+    this._skipProactiveOpening = !!skipProactiveOpening;
+    this._openingAlreadyPlayedText = safeStr(openingAlreadyPlayedText);
     this._hangupScheduled = false;
     this._awaitingCallbackConfirmation = false;
     this._closingSentAfterCallback = false;
@@ -454,10 +456,32 @@ class GeminiLiveSession {
         this.ws.send(JSON.stringify(setup));
         this.ready = true;
 
+        if (this._skipProactiveOpening && this._openingAlreadyPlayedText) {
+          try {
+            this.ws.send(JSON.stringify({
+              clientContent: {
+                turns: [{
+                  role: "user",
+                  parts: [{
+                    text: [
+                      "The following sentence was already spoken to the caller in Hebrew using the same voice. Do not repeat it.",
+                      "Continue the conversation naturally from after that sentence.",
+                      this._openingAlreadyPlayedText,
+                    ].join("\n"),
+                  }],
+                }],
+                turnComplete: true,
+              },
+            }));
+          } catch {}
+        }
+
         // fast path: לא מחכים ל-setupComplete כדי לשלוח פתיח ראשון
-        this._openingKickoffTimer = setTimeout(() => {
-          this._sendProactiveOpening();
-        }, 120);
+        if (!this._skipProactiveOpening) {
+          this._openingKickoffTimer = setTimeout(() => {
+            this._sendProactiveOpening();
+          }, 120);
+        }
       } catch (e) {
         logger.error("Failed to send Gemini setup", {
           ...this.meta,
@@ -492,7 +516,6 @@ class GeminiLiveSession {
             inline?.data &&
             String(inline?.mimeType || "").startsWith("audio/pcm")
           ) {
-            mark(this._call.callSid, this._call.streamSid, "first_gemini_audio_chunk");
             const ulawB64 = pcm24kB64ToUlaw8kB64(inline.data);
             if (ulawB64 && this.onGeminiAudioUlaw8kBase64) {
               this.onGeminiAudioUlaw8kBase64(ulawB64);
